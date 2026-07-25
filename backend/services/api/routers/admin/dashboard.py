@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -295,7 +295,7 @@ async def get_dashboard_metrics(
             user_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE is_active = true AND is_deleted = false) as active,
                     COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as new_today
@@ -307,7 +307,7 @@ async def get_dashboard_metrics(
             strategy_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE status = 'ACTIVE') as live
                 FROM strategies
@@ -318,8 +318,8 @@ async def get_dashboard_metrics(
             backtest_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT COUNT(*) as backtesting 
-                FROM qlib_backtest_runs 
+                SELECT COUNT(*) as backtesting
+                FROM qlib_backtest_runs
                 WHERE status IN ('running', 'pending')
             """,
             )
@@ -328,7 +328,7 @@ async def get_dashboard_metrics(
             content_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     (SELECT COUNT(*) FROM community_posts) as posts,
                     (SELECT COUNT(*) FROM community_comments) as comments
             """,
@@ -372,3 +372,127 @@ async def get_dashboard_metrics(
                 "system": _build_system_metrics(health_score, uptime_days, services),
             },
         )
+
+
+@router.get("/market-sources", response_model=ApiResponse)
+async def get_market_sources_status(
+    current_user: dict = Depends(require_admin),
+):
+    """
+    检测当前部署使用的共享 PostgreSQL/Redis 数据源。
+    """
+    from sqlalchemy import text
+
+    from backend.shared.market_db_manager import get_market_session, MARKET_DB_HOST
+
+    # ========== 行情快照数据 ==========
+    online_status = {
+        "server_ip": MARKET_DB_HOST,
+        "status": "checking",
+        "postgresql": {"status": "unknown"},
+        "redis": {"status": "unknown"},
+        "latest_date": None,
+        "row_count": 0,
+        "error": None,
+    }
+
+    # PostgreSQL 检测
+    try:
+        async with get_market_session() as session:
+            res = await session.execute(text("SELECT MAX(trade_date) FROM stock_daily_latest"))
+            max_date = res.scalar()
+
+            if max_date:
+                res_count = await session.execute(
+                    text("SELECT COUNT(*) FROM stock_daily_latest WHERE trade_date = :d"),
+                    {"d": max_date}
+                )
+                row_count = res_count.scalar() or 0
+                online_status["postgresql"]["status"] = "healthy"
+                online_status["latest_date"] = max_date.isoformat() if hasattr(max_date, 'isoformat') else str(max_date)
+                online_status["row_count"] = row_count
+            else:
+                online_status["postgresql"]["status"] = "empty"
+    except Exception as e:
+        logger.error(f"Market PostgreSQL connection failed: {e}")
+        online_status["postgresql"]["status"] = "unreachable"
+        online_status["postgresql"]["error"] = str(e)
+
+    # Redis 检测
+    try:
+        from backend.services.stream.market_app.market_config import (
+            MARKET_REDIS_HOST,
+            MARKET_REDIS_PORT,
+            MARKET_REDIS_USER,
+            MARKET_REDIS_PASSWORD,
+            MARKET_REDIS_DB,
+        )
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.Redis(
+            host=MARKET_REDIS_HOST,
+            port=MARKET_REDIS_PORT,
+            username=MARKET_REDIS_USER or None,
+            password=MARKET_REDIS_PASSWORD or None,
+            db=MARKET_REDIS_DB,
+        )
+        await redis_client.ping()
+        online_status["redis"]["status"] = "healthy"
+        await redis_client.aclose()
+    except Exception as e:
+        logger.error(f"Market Redis connection failed: {e}")
+        online_status["redis"]["status"] = "unreachable"
+        online_status["redis"]["error"] = str(e)
+
+    # 综合状态判定
+    pg_ok = online_status["postgresql"]["status"] == "healthy"
+    redis_ok = online_status["redis"]["status"] == "healthy"
+    if pg_ok and redis_ok:
+        online_status["status"] = "healthy" if online_status["row_count"] > 4000 else "degraded"
+    elif pg_ok or redis_ok:
+        online_status["status"] = "degraded"
+    else:
+        online_status["status"] = "unreachable"
+
+    # ========== 模型训练特征数据 ==========
+    # 保留 offline_source/feature_snapshots 字段以兼容现有前端接口，
+    # 数据改为读取当前部署共享 PostgreSQL 中的 market_data_daily。
+    offline_status = {
+        "server_ip": MARKET_DB_HOST,
+        "status": "checking",
+        "postgresql": {"status": "unknown"},
+        "feature_snapshots": {"status": "unknown", "latest_date": None, "row_count": 0},
+        "error": None,
+    }
+
+    try:
+        async with get_market_session() as session:
+            res = await session.execute(text("SELECT MAX(trade_date) FROM market_data_daily"))
+            max_date = res.scalar()
+
+            if max_date:
+                res_count = await session.execute(
+                    text("SELECT COUNT(*) FROM market_data_daily WHERE trade_date = :d"),
+                    {"d": max_date}
+                )
+                row_count = res_count.scalar() or 0
+                offline_status["feature_snapshots"]["status"] = "healthy"
+                offline_status["feature_snapshots"]["latest_date"] = max_date.isoformat() if hasattr(max_date, 'isoformat') else str(max_date)
+                offline_status["feature_snapshots"]["row_count"] = row_count
+            else:
+                offline_status["feature_snapshots"]["status"] = "empty"
+
+            offline_status["postgresql"]["status"] = "healthy"
+            offline_status["status"] = "healthy" if max_date else "empty"
+    except Exception as e:
+        logger.error(f"Feature PostgreSQL connection failed: {e}")
+        offline_status["postgresql"]["status"] = "unreachable"
+        offline_status["status"] = "unreachable"
+        offline_status["error"] = str(e)
+
+    data = {
+        "online_source": online_status,
+        "offline_source": offline_status,
+    }
+
+    return ApiResponse(success=True, code=200, message="获取成功", data=data)

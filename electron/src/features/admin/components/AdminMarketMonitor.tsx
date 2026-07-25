@@ -133,7 +133,7 @@ export const AdminMarketMonitor: React.FC = () => {
             </div>
 
             <Row gutter={[24, 24]}>
-                {/* 106 Online Source */}
+                {/* Shared PostgreSQL market source */}
                 <Col xs={24} lg={12}>
                     <Card
                         variant="borderless"
@@ -147,7 +147,7 @@ export const AdminMarketMonitor: React.FC = () => {
                                 </div>
                                 <div>
                                     <Title level={4} className="!mb-0 !text-slate-800">在线行情源</Title>
-                                    <Text className="text-xs text-slate-400 font-mono">{online?.server_ip || '106.53.100.144'}</Text>
+                                    <Text className="text-xs text-slate-400 font-mono">{online?.server_ip || '共享 PostgreSQL'}</Text>
                                     <Text className="text-xs text-slate-400 block mt-0.5">投研平台数据查询</Text>
                                 </div>
                             </div>
@@ -212,7 +212,7 @@ export const AdminMarketMonitor: React.FC = () => {
                     </Card>
                 </Col>
 
-                {/* 139 Offline Source */}
+                {/* Shared PostgreSQL feature source */}
                 <Col xs={24} lg={12}>
                     <Card
                         variant="borderless"
@@ -225,9 +225,9 @@ export const AdminMarketMonitor: React.FC = () => {
                                     <DatabaseOutlined className="text-purple-600 text-2xl" />
                                 </div>
                                 <div>
-                                    <Title level={4} className="!mb-0 !text-slate-800">离线数据源</Title>
-                                    <Text className="text-xs text-slate-400 font-mono">{offline?.server_ip || '139.199.75.121'}</Text>
-                                    <Text className="text-xs text-slate-400 block mt-0.5">Parquet 数据更新</Text>
+                                    <Title level={4} className="!mb-0 !text-slate-800">模型特征数据源</Title>
+                                    <Text className="text-xs text-slate-400 font-mono">{offline?.server_ip || '共享 PostgreSQL'}</Text>
+                                    <Text className="text-xs text-slate-400 block mt-0.5">模型训练特征</Text>
                                 </div>
                             </div>
                             <div className="px-3 py-1 bg-slate-50 rounded-lg border border-slate-100">
@@ -264,7 +264,7 @@ export const AdminMarketMonitor: React.FC = () => {
 
                             <div className="bg-slate-50 p-4 rounded-xl">
                                 <div className="flex items-center justify-between">
-                                    <Text className="text-xs font-bold text-slate-500 uppercase tracking-wider">Feature Snapshots</Text>
+                                    <Text className="text-xs font-bold text-slate-500 uppercase tracking-wider">Feature Matrix</Text>
                                     {renderServiceTag(offline?.feature_snapshots?.status || 'unknown')}
                                 </div>
                             </div>
