@@ -94,6 +94,9 @@ export const AdminMarketMonitor: React.FC = () => {
         if (status === 'unreachable' || status === 'error') {
             return <Tag color="error" icon={<CloseCircleOutlined />}>异常</Tag>;
         }
+        if (status === 'empty') {
+            return <Tag color="warning">暂无数据</Tag>;
+        }
         return <Tag color="default">未知</Tag>;
     };
 
