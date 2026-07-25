@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -157,7 +157,7 @@ async def get_dashboard_metrics(
             user_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE is_active = true AND is_deleted = false) as active,
                     COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as new_today
@@ -169,7 +169,7 @@ async def get_dashboard_metrics(
             strategy_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE status = 'ACTIVE') as live
                 FROM strategies
@@ -180,8 +180,8 @@ async def get_dashboard_metrics(
             backtest_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT COUNT(*) as backtesting 
-                FROM qlib_backtest_runs 
+                SELECT COUNT(*) as backtesting
+                FROM qlib_backtest_runs
                 WHERE status IN ('running', 'pending')
             """,
             )
@@ -190,7 +190,7 @@ async def get_dashboard_metrics(
             content_row = await _safe_fetch_one(
                 session,
                 """
-                SELECT 
+                SELECT
                     (SELECT COUNT(*) FROM community_posts) as posts,
                     (SELECT COUNT(*) FROM community_comments) as comments
             """,
@@ -241,14 +241,13 @@ async def get_market_sources_status(
     current_user: dict = Depends(require_admin),
 ):
     """
-    直接检测远端服务器状态 (106 PostgreSQL/Redis + 139 PostgreSQL)
+    检测当前部署使用的共享 PostgreSQL/Redis 数据源。
     """
     from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
 
     from backend.shared.market_db_manager import get_market_session, MARKET_DB_HOST
 
-    # ========== 检测 106 服务器 ==========
+    # ========== 行情快照数据 ==========
     online_status = {
         "server_ip": MARKET_DB_HOST,
         "status": "checking",
@@ -277,7 +276,7 @@ async def get_market_sources_status(
             else:
                 online_status["postgresql"]["status"] = "empty"
     except Exception as e:
-        logger.error(f"106 PostgreSQL connection failed: {e}")
+        logger.error(f"Market PostgreSQL connection failed: {e}")
         online_status["postgresql"]["status"] = "unreachable"
         online_status["postgresql"]["error"] = str(e)
 
@@ -303,7 +302,7 @@ async def get_market_sources_status(
         online_status["redis"]["status"] = "healthy"
         await redis_client.aclose()
     except Exception as e:
-        logger.error(f"106 Redis connection failed: {e}")
+        logger.error(f"Market Redis connection failed: {e}")
         online_status["redis"]["status"] = "unreachable"
         online_status["redis"]["error"] = str(e)
 
@@ -317,28 +316,25 @@ async def get_market_sources_status(
     else:
         online_status["status"] = "unreachable"
 
-    # ========== 检测 139 服务器 ==========
+    # ========== 模型训练特征数据 ==========
+    # 保留 offline_source/feature_snapshots 字段以兼容现有前端接口，
+    # 数据改为读取当前部署共享 PostgreSQL 中的 market_data_daily。
     offline_status = {
-        "server_ip": "139.199.75.121",
+        "server_ip": MARKET_DB_HOST,
         "status": "checking",
         "postgresql": {"status": "unknown"},
         "feature_snapshots": {"status": "unknown", "latest_date": None, "row_count": 0},
         "error": None,
     }
 
-    remote_db_url = "postgresql+asyncpg://readonly_monitor:quantmind_monitor_2025@139.199.75.121:5432/quantmind"
-    engine = None
-
     try:
-        engine = create_async_engine(remote_db_url, pool_pre_ping=True)
-        async with engine.connect() as conn:
-            # 检测 feature_snapshots 表
-            res = await conn.execute(text("SELECT MAX(trade_date) FROM feature_snapshots"))
+        async with get_market_session() as session:
+            res = await session.execute(text("SELECT MAX(trade_date) FROM market_data_daily"))
             max_date = res.scalar()
 
             if max_date:
-                res_count = await conn.execute(
-                    text("SELECT COUNT(*) FROM feature_snapshots WHERE trade_date = :d"),
+                res_count = await session.execute(
+                    text("SELECT COUNT(*) FROM market_data_daily WHERE trade_date = :d"),
                     {"d": max_date}
                 )
                 row_count = res_count.scalar() or 0
@@ -349,15 +345,12 @@ async def get_market_sources_status(
                 offline_status["feature_snapshots"]["status"] = "empty"
 
             offline_status["postgresql"]["status"] = "healthy"
-            offline_status["status"] = "healthy"
+            offline_status["status"] = "healthy" if max_date else "empty"
     except Exception as e:
-        logger.error(f"139 PostgreSQL connection failed: {e}")
+        logger.error(f"Feature PostgreSQL connection failed: {e}")
         offline_status["postgresql"]["status"] = "unreachable"
         offline_status["status"] = "unreachable"
         offline_status["error"] = str(e)
-    finally:
-        if engine:
-            await engine.dispose()
 
     data = {
         "online_source": online_status,
@@ -365,4 +358,3 @@ async def get_market_sources_status(
     }
 
     return ApiResponse(success=True, code=200, message="获取成功", data=data)
-
