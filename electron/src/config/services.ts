@@ -68,9 +68,10 @@ export async function initDynamicServerUrl(): Promise<void> {
     return;
   }
 
-  if (isElectronEnv()) {
+  const electronApi = typeof window !== 'undefined' ? (window as any).electronAPI : null;
+  if (isElectronEnv() && typeof electronApi?.getServerUrl === 'function') {
     try {
-      const url = await (window as any).electronAPI.getServerUrl();
+      const url = await electronApi.getServerUrl();
       if (url && typeof url === 'string') {
         dynamicServerUrl = url.replace(/\/+$/, '');
         persistServerUrl(dynamicServerUrl);
@@ -133,6 +134,10 @@ const getWebSocketUrl = () => {
   if (persisted) {
     return `${persisted.replace(/^http/, 'ws')}/api/v1/ws/market`;
   }
+  const configured = ENV.VITE_WS_BASE_URL || ENV.VITE_WEBSOCKET_MARKET_URL;
+  if (configured) {
+    return configured;
+  }
   const gateway = getBaseUrl();
   if (gateway) {
     return `${gateway.replace(/^http/, 'ws')}/api/v1/ws/market`;
@@ -141,10 +146,6 @@ const getWebSocketUrl = () => {
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/api/v1/ws/market`;
-  }
-  // 最后才回退到环境变量，避免开发环境配置压过用户保存的服务器地址
-  if (ENV.VITE_WS_BASE_URL || ENV.VITE_WEBSOCKET_MARKET_URL) {
-    return ENV.VITE_WS_BASE_URL || ENV.VITE_WEBSOCKET_MARKET_URL;
   }
   return '';
 };

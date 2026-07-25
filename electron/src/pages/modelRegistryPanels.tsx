@@ -950,7 +950,7 @@ export const InferenceCenterPanel: React.FC<{
            <div className="glass-panel rounded-2xl p-4 border border-slate-100/50">
              <button
                type="button"
-               onClick={() => setDispatchOpen((prev) => !prev)}
+               onClick={() => setDispatchOpen(!dispatchOpen)}
                className="w-full flex items-center justify-between text-left"
              >
                <div className="flex items-center gap-2 text-slate-400">
