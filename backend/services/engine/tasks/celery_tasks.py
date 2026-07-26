@@ -257,8 +257,7 @@ def auto_inference_if_needed() -> dict[str, Any]:
                 "FROM qm_model_inference_settings "
                 "WHERE enabled = TRUE "
                 "  AND (next_run_at IS NULL OR next_run_at <= :now_local)"
-            )
-            ,
+            ),
             {"now_local": now_local},
         ).all()
 
@@ -411,10 +410,16 @@ def run_auto_inference_task(
                 reason_code="ALREADY_DONE",
                 reason_detail="engine_feature_runs already has signal_ready record for target trade date",
             )
-            return {"status": "skipped", "reason": "already_done", "task_id": self.request.id}
+            return {
+                "status": "skipped",
+                "reason": "already_done",
+                "task_id": self.request.id,
+            }
 
         lock_scope = f"{tenant_id}:{user_id}:{strategy_id or model_id or 'default'}"
-        if not _try_acquire_strategy_lock(lock_scope, prediction_trade_date, f"celery_auto:{self.request.id}"):
+        if not _try_acquire_strategy_lock(
+            lock_scope, prediction_trade_date, f"celery_auto:{self.request.id}"
+        ):
             _write_dispatch_log(
                 db,
                 trigger_source=trigger_source,
@@ -428,7 +433,11 @@ def run_auto_inference_task(
                 reason_code="LOCK_HELD",
                 reason_detail=f"lock scope conflict: {lock_scope}",
             )
-            return {"status": "skipped", "reason": "lock_held", "task_id": self.request.id}
+            return {
+                "status": "skipped",
+                "reason": "lock_held",
+                "task_id": self.request.id,
+            }
 
         try:
             _write_dispatch_log(
@@ -498,7 +507,11 @@ def run_auto_inference_task(
                 prediction_trade_date=prediction_trade_date,
                 status="success" if exec_res.success else "failed",
                 reason_code=None if exec_res.success else "EXECUTION_FAILED",
-                reason_detail=None if exec_res.success else str(getattr(exec_res, "message", "") or ""),
+                reason_detail=(
+                    None
+                    if exec_res.success
+                    else str(getattr(exec_res, "message", "") or "")
+                ),
                 run_id=getattr(exec_res, "run_id", None),
             )
             return {
@@ -734,57 +747,48 @@ def sync_market_data_daily_task(
     apply: bool = True,
 ) -> dict[str, Any]:
     """
-    Celery 任务：执行每日数据同步 (容器内运行，使用容器 Python 3.10)。
-    流程: 源 PG->parquet->stock_daily_latest->stock_strategy_latest->index_ohlcv_daily->回填连板->收益率->qlib_data
+    Celery 任务：从 Baostock 增量更新基础行情与 Qlib 日线。
+
+    高维模型特征继续由签名官方数据包更新；此任务不会填充伪特征。
     """
     import subprocess
     import sys
     from pathlib import Path
 
     root = Path(os.getcwd())
-    scripts = root / "scripts" / "data" / "maintenance"
-    processing = root / "scripts" / "data" / "processing"
+    script = root / "scripts" / "data" / "maintenance" / "sync_daily_from_baostock.py"
+    cmd = [sys.executable, str(script)]
+    if target_date:
+        cmd.extend(["--target-date", target_date])
+    if max_symbols:
+        cmd.extend(["--max-symbols", str(max_symbols)])
+    if apply:
+        cmd.append("--apply")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            cwd=str(root),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "message": "Baostock 数据同步超时"}
 
-    steps = [
-        ("Step 1: 源 PG -> parquet", [sys.executable, str(scripts / "sync_parquets_from_remote_pg.py")]),
-        ("Step 2: parquet -> stock_daily_latest", [sys.executable, str(scripts / "sync_stock_daily_latest_from_parquet.py")]),
-        ("Step 3: stock_daily_latest -> stock_strategy_latest", [sys.executable, str(scripts / "sync_strategy_latest_from_stock_daily.py")]),
-        ("Step 4: qlib features -> index_ohlcv_daily", [sys.executable, str(scripts / "sync_index_ohlcv_from_qlib_features.py")]),
-        ("Step 5: 回填连板字段", [sys.executable, str(scripts / "backfill_consecutive_limit_up_days.py"), "--apply"]),
-        ("Step 6: 回填收益率", [sys.executable, str(processing / "backfill_return_fields.py"), "--recent-days", "10"]),
-        ("Step 7: parquet -> qlib_data", [sys.executable, str(scripts / "sync_qlib_from_fundamental_parquet.py")]),
-    ]
-
-    results = []
-
-    for label, cmd in steps:
-        logger.info("[DataSync] %s", label)
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, cwd=str(root))
-        except subprocess.TimeoutExpired:
-            logger.error("[DataSync] %s 超时", label)
-            results.append({"step": label, "success": False, "error": "timeout"})
-            break
-        except Exception as e:
-            logger.exception("[DataSync] %s 异常: %s", label, e)
-            results.append({"step": label, "success": False, "error": str(e)})
-            break
-
-        ok = r.returncode == 0
-        if not ok:
-            logger.error("[DataSync] %s 失败 exit=%s stderr=%s", label, r.returncode, r.stderr[-500:])
-        else:
-            logger.info("[DataSync] %s 完成", label)
-        results.append({"step": label, "success": ok, "rc": r.returncode})
-
-        if not ok:
-            break
-
-    all_ok = all(r["success"] for r in results)
+    success = result.returncode == 0
+    if not success:
+        logger.error(
+            "[DataSync] failed exit=%s stderr=%s",
+            result.returncode,
+            result.stderr[-1000:],
+        )
     return {
-        "success": all_ok,
-        "message": "所有步骤完成" if all_ok else f"在 '{results[-1]['step']}' 失败",
-        "steps": results,
+        "success": success,
+        "source": "baostock",
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
     }
 
 

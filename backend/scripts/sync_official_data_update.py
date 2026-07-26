@@ -64,7 +64,9 @@ def _download_file(url: str, target: Path) -> None:
     target.write_bytes(_download_bytes(url))
 
 
-def _manifest_file_by_kind(files: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
+def _manifest_file_by_kind(
+    files: list[dict[str, Any]], kind: str
+) -> dict[str, Any] | None:
     for item in files:
         if isinstance(item, dict) and str(item.get("kind") or "").strip() == kind:
             return item
@@ -88,7 +90,11 @@ def _assert_entry_consistency(
             )
     api_size = api_entry.get("size")
     manifest_size = manifest_entry.get("size")
-    if api_size is not None and manifest_size is not None and int(api_size) != int(manifest_size):
+    if (
+        api_size is not None
+        and manifest_size is not None
+        and int(api_size) != int(manifest_size)
+    ):
         raise RuntimeError(
             f"{kind} 元数据不一致: API 返回的 size={api_size}，manifest.json 中为 {manifest_size}"
         )
@@ -184,7 +190,9 @@ async def _scan_local_stock_daily_latest_last_date() -> str | None:
         password=db_password,
     )
     try:
-        row = await conn.fetchrow("SELECT MAX(trade_date) AS max_trade_date FROM stock_daily_latest")
+        row = await conn.fetchrow(
+            "SELECT MAX(trade_date) AS max_trade_date FROM stock_daily_latest"
+        )
         if not row:
             return None
         return _normalize_iso_date(row["max_trade_date"])
@@ -197,7 +205,9 @@ def _scan_local_status(project_root: Path) -> dict[str, Any]:
     feature_last_date = _scan_local_feature_snapshots_last_date(project_root)
     stock_last_date = asyncio.run(_scan_local_stock_daily_latest_last_date())
 
-    available_dates = [d for d in (qlib_last_date, feature_last_date, stock_last_date) if d]
+    available_dates = [
+        d for d in (qlib_last_date, feature_last_date, stock_last_date) if d
+    ]
     overall_watermark = min(available_dates) if available_dates else None
 
     return {
@@ -208,7 +218,9 @@ def _scan_local_status(project_root: Path) -> dict[str, Any]:
     }
 
 
-def _should_skip_download(local_status: dict[str, Any], remote_trade_date: str | None) -> bool:
+def _should_skip_download(
+    local_status: dict[str, Any], remote_trade_date: str | None
+) -> bool:
     if not remote_trade_date:
         return False
     available_dates = [
@@ -271,7 +283,9 @@ async def _upsert_stock_daily_latest(parquet_path: Path) -> int:
             await conn.execute(
                 f"CREATE TEMP TABLE {temp_table} AS SELECT * FROM stock_daily_latest WITH NO DATA"
             )
-            await conn.copy_records_to_table(temp_table, records=records, columns=use_cols)
+            await conn.copy_records_to_table(
+                temp_table, records=records, columns=use_cols
+            )
 
             insert_cols_sql = ", ".join(use_cols)
             select_cols_sql = ", ".join(use_cols)
@@ -305,13 +319,23 @@ def _extract_bundle(bundle_path: Path, target_dir: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="拉取并应用官方增量数据包")
-    parser.add_argument("--api-base-url", required=True)
-    parser.add_argument("--access-key", required=True)
-    parser.add_argument("--secret-key", required=True)
+    parser.add_argument(
+        "--api-base-url",
+        default=os.getenv("QUANTMIND_UPDATE_API_BASE", "https://api.quantmind.cloud"),
+    )
+    parser.add_argument("--access-key", default=os.getenv("QUANTMIND_ACCESS_KEY", ""))
+    parser.add_argument("--secret-key", default=os.getenv("QUANTMIND_SECRET_KEY", ""))
     parser.add_argument("--version", default="")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true", help="忽略本地日期检查，强制下载并应用远端版本")
+    parser.add_argument(
+        "--force", action="store_true", help="忽略本地日期检查，强制下载并应用远端版本"
+    )
     args = parser.parse_args()
+
+    if not args.access_key.strip() or not args.secret_key.strip():
+        parser.error(
+            "official source requires QUANTMIND_ACCESS_KEY and QUANTMIND_SECRET_KEY"
+        )
 
     project_root = Path(__file__).resolve().parents[2]
     load_dotenv(project_root / ".env")
@@ -331,7 +355,9 @@ def main() -> int:
     version = str(payload.get("version") or args.version or "unknown")
     remote_trade_date = _normalize_iso_date(payload.get("trade_date"))
     files = payload.get("files") if isinstance(payload.get("files"), list) else []
-    manifest_meta = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else {}
+    manifest_meta = (
+        payload.get("manifest") if isinstance(payload.get("manifest"), dict) else {}
+    )
     local_status = _scan_local_status(project_root)
     bundle_entry = None
     manifest_entry = None
@@ -417,7 +443,9 @@ def main() -> int:
     if manifest_entry and manifest_entry.get("url"):
         manifest_path = download_dir / "manifest.parquet"
         _download_file(str(manifest_entry["url"]), manifest_path)
-        expected_manifest_parquet_sha = str(manifest_entry.get("sha256") or "").strip().lower()
+        expected_manifest_parquet_sha = (
+            str(manifest_entry.get("sha256") or "").strip().lower()
+        )
         if expected_manifest_parquet_sha:
             actual_manifest_parquet_sha = _sha256_file(manifest_path)
             if actual_manifest_parquet_sha != expected_manifest_parquet_sha:

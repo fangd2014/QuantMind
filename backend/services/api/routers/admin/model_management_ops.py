@@ -46,7 +46,11 @@ from .model_management_utils import (
 router = APIRouter()
 
 DAILY_SYNC_SHELL_SCRIPT = (
-    Path(os.getcwd()) / "scripts" / "data" / "maintenance" / "run_daily_pg_parquet_and_qlib_sync.sh"
+    Path(os.getcwd())
+    / "scripts"
+    / "data"
+    / "maintenance"
+    / "run_daily_pg_parquet_and_qlib_sync.sh"
 )
 
 
@@ -156,7 +160,7 @@ async def get_data_status(
                 market="SSE",
                 trade_date=now_local.date(),
                 tenant_id=tenant_id,
-                user_id=user_id
+                user_id=user_id,
             )
         else:
             # 已过开盘时间，取今天（若是交易日）或更早的最后一个交易日
@@ -164,7 +168,7 @@ async def get_data_status(
                 market="SSE",
                 trade_date=now_local.date(),
                 tenant_id=tenant_id,
-                user_id=user_id
+                user_id=user_id,
             )
             if is_td:
                 trade_date_obj = now_local.date()
@@ -173,7 +177,7 @@ async def get_data_status(
                     market="SSE",
                     trade_date=now_local.date(),
                     tenant_id=tenant_id,
-                    user_id=user_id
+                    user_id=user_id,
                 )
         trade_date = trade_date_obj.isoformat()
 
@@ -218,7 +222,9 @@ async def get_data_status(
 
         if instruments_all_path.exists():
             try:
-                for line in instruments_all_path.read_text(encoding="utf-8").splitlines():
+                for line in instruments_all_path.read_text(
+                    encoding="utf-8"
+                ).splitlines():
                     if not line.strip():
                         continue
                     code = line.split()[0].strip().upper()
@@ -251,12 +257,15 @@ async def get_data_status(
             "qlib_data": qlib_info,
             "feature_snapshots": feature_snapshots_info,
             "async_trigger": bool(celery_app),
-            "message": "数据正在后台扫描中，请稍后刷新"
-            if not refresh
-            else "已触发强制刷新任务",
+            "message": (
+                "数据正在后台扫描中，请稍后刷新"
+                if not refresh
+                else "已触发强制刷新任务"
+            ),
         }
     except Exception as e:
         import traceback
+
         error_msg = f"Data status scanning failed: {str(e)}"
         print(error_msg)
         print(traceback.format_exc())
@@ -265,7 +274,7 @@ async def get_data_status(
             "checked_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
             "qlib_data": {"exists": False},
             "feature_snapshots": {"exists": False},
-            "message": f"状态扫描异常: {str(e)}"
+            "message": f"状态扫描异常: {str(e)}",
         }
 
 
@@ -303,74 +312,72 @@ async def sync_official_data_update(
     current_user: dict = Depends(require_admin),
 ):
     _ = current_user
-
-    # OSS 部署模式：直接在当前容器内执行 Python 同步脚本
-    # 脚本路径在容器内为 /app/scripts/data/maintenance/
-    scripts_dir = Path("/app/scripts/data/maintenance")
-    processing_dir = Path("/app/scripts/data/processing")
-
-    # 简化后的同步步骤：只拉取远端特征快照和底层数据，并转换给 qlib_data
-    steps = [
-        ("Step 1/2: 从远程PG拉取最新 Parquet 数据", "sync_parquets_from_remote_pg.py"),
-        ("Step 2/2: 同步 qlib_data 二进制引擎", "sync_qlib_from_fundamental_parquet.py"),
-    ]
-
-    results = []
-    for step_name, script_name in steps:
-        # 处理相对路径
-        if script_name.startswith("../"):
-            script_path = processing_dir / script_name[3:]
-        else:
-            script_path = scripts_dir / script_name
-
-        if not script_path.exists():
-            results.append({
-                "step": step_name,
-                "success": False,
-                "error": f"脚本不存在: {script_path}",
-            })
-            continue
-
-        # 收益计算脚本需要 --recent-days 参数，连板回填脚本需要 --apply 参数
-        cmd = ["python", str(script_path)]
-        if "backfill_return" in script_name:
-            cmd.extend(["--recent-days", "10"])
-        elif "backfill_consecutive" in script_name:
-            cmd.append("--apply")
-
-        try:
-            proc = subprocess.run(
-                cmd,
-                cwd="/app",
-                capture_output=True,
-                text=True,
-                timeout=1800,
-                check=False,
+    source = os.getenv("DATA_UPDATE_SOURCE", "baostock").strip().lower()
+    official_values = {
+        "api_base_url": (
+            payload.api_base_url or os.getenv("QUANTMIND_UPDATE_API_BASE", "")
+        ).strip(),
+        "access_key": (
+            payload.access_key or os.getenv("QUANTMIND_ACCESS_KEY", "")
+        ).strip(),
+        "secret_key": (
+            payload.secret_key or os.getenv("QUANTMIND_SECRET_KEY", "")
+        ).strip(),
+    }
+    if source == "official" or all(official_values.values()):
+        missing = [key for key, value in official_values.items() if not value]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"官方增量源缺少配置: {', '.join(missing)}",
             )
-            results.append({
-                "step": step_name,
-                "success": proc.returncode == 0,
-                "exit_code": proc.returncode,
-                "stdout": proc.stdout[-2000:] if proc.stdout else "",
-                "stderr": proc.stderr[-2000:] if proc.stderr else "",
-            })
-        except subprocess.TimeoutExpired as exc:
-            results.append({
-                "step": step_name,
-                "success": False,
-                "error": f"执行超时: {exc}",
-            })
-        except Exception as exc:
-            results.append({
-                "step": step_name,
-                "success": False,
-                "error": str(exc),
-            })
+        cmd = [
+            sys.executable,
+            "/app/backend/scripts/sync_official_data_update.py",
+        ]
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "QUANTMIND_UPDATE_API_BASE": official_values["api_base_url"],
+                "QUANTMIND_ACCESS_KEY": official_values["access_key"],
+                "QUANTMIND_SECRET_KEY": official_values["secret_key"],
+            }
+        )
+        if payload.version:
+            cmd.extend(["--version", payload.version])
+        if payload.dry_run:
+            cmd.append("--dry-run")
+        resolved_source = "official"
+    else:
+        cmd = [
+            sys.executable,
+            "/app/scripts/data/maintenance/sync_daily_from_baostock.py",
+        ]
+        if not payload.dry_run:
+            cmd.append("--apply")
+        resolved_source = "baostock"
+        child_env = None
 
-    all_success = all(r.get("success", False) for r in results)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            check=False,
+            env=child_env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"数据同步执行超时: {exc}") from exc
+
     return {
-        "success": all_success,
-        "steps": results,
+        "success": proc.returncode == 0,
+        "source": resolved_source,
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout[-4000:] if proc.stdout else "",
+        "stderr": proc.stderr[-4000:] if proc.stderr else "",
+        "error": None if proc.returncode == 0 else "数据同步执行失败，请查看 stderr",
     }
 
 
@@ -504,13 +511,15 @@ async def precheck_inference(
     dim_source = "none"
     try:
         async with get_session(read_only=True) as session:
-            stat_sql = text("""
+            stat_sql = text(
+                """
                 SELECT
                     MAX(trade_date) AS latest_trade_date,
                     MAX(updated_at) AS latest_updated_at,
                     COUNT(*) FILTER (WHERE trade_date = :trade_date) AS today_rows
                 FROM stock_daily_latest
-                """)
+                """
+            )
             row = (
                 (
                     await session.execute(
