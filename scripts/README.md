@@ -33,6 +33,7 @@ Unified scripts directory for the QuantMind project, organized by functionality.
 - `scripts/data/processing/merge_features_with_labels.py`: 将 `db/feature_snapshots/features_YYYY.parquet`（默认）或 `db/feature_snapshots/model_features_YYYY.parquet`（兼容）与 `db/csmar_data.duckdb` 的次日收益率标签做高性能合并，输出更新后的 `db/feature_snapshots/model_features_YYYY.parquet`，并自动执行去重与质量校验报告生成。
 - `scripts/data/ingestion/update_qlib_sh_sz_from_baostock.py`: 使用 Baostock 对 `db/qlib_data` 做 SH/SZ 日线增量补数（默认 dry-run，`--apply` 才写入）。会同步更新 `calendars/day.txt` 与 `instruments/*.txt` 的 SH/SZ 截止日期。BJ 不在该脚本支持范围内。
 - `scripts/data/ingestion/sync_market_data_daily_from_baostock.py`: 使用 Baostock 同步 `market_data_daily`，会自动按表结构选择“基础字段模式”或 `feature_0..N` 模式写入（默认 dry-run，`--apply` 写库）。
+- `scripts/data/maintenance/sync_etf_futures_from_tushare.py`: 使用环境变量 `TUSHARE_TOKEN` 同步 ETF 日线/复权因子、CFFEX 的 IF/IH/IC/IM 合约日线与主力映射。数据写入独立 PostgreSQL 表并按年导出到 `db/market_ext`，不会混入股票表或股票 Qlib provider。
 - `scripts/training/sync_feature_catalog_to_db.py`: 将 `config/features/model_training_feature_catalog_v1.json` 同步到 PostgreSQL 特征注册表（`qm_feature_category/qm_feature_definition/qm_feature_set_version/qm_feature_set_item`），默认会把同步版本置为 `active` 并将其他 active 版本置为 `inactive`；支持 `--dry-run` 预检。
 
 ### Redis & Market Data
@@ -69,6 +70,12 @@ python scripts/data/ingestion/update_qlib_sh_sz_from_baostock.py          # dry-
 python scripts/data/ingestion/update_qlib_sh_sz_from_baostock.py --apply  # 写入
 python scripts/data/ingestion/sync_market_data_daily_from_baostock.py     # dry-run
 python scripts/data/ingestion/sync_market_data_daily_from_baostock.py --apply
+
+# Tushare ETF/股指期货权限冒烟检查（不写数据）
+python scripts/data/maintenance/sync_etf_futures_from_tushare.py --smoke-test
+
+# 首次从 2016 年回填；之后自动按数据库水位增量更新
+python scripts/data/maintenance/sync_etf_futures_from_tushare.py --apply
 
 # 合并特征与训练标签（默认读取 features_YYYY，覆盖生成 model_features_YYYY）
 python scripts/data/processing/merge_features_with_labels.py --force
