@@ -856,6 +856,54 @@ def feature_snapshot_task(self, year: int = 0) -> dict[str, Any]:
         raise
 
 
+@celery_app.task(name="engine.tasks.sync_market_data_daily_task")
+def sync_market_data_daily_task(
+    target_date: str | None = None,
+    max_symbols: int = 0,
+    apply: bool = True,
+) -> dict[str, Any]:
+    """从 Baostock 增量更新基础行情与 Qlib 日线。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(os.getcwd())
+    script = root / "scripts" / "data" / "maintenance" / "sync_daily_from_baostock.py"
+    cmd = [sys.executable, str(script)]
+    if target_date:
+        cmd.extend(["--target-date", target_date])
+    if max_symbols:
+        cmd.extend(["--max-symbols", str(max_symbols)])
+    if apply:
+        cmd.append("--apply")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            cwd=str(root),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "message": "Baostock 数据同步超时"}
+
+    success = result.returncode == 0
+    if not success:
+        logger.error(
+            "[DataSync] failed exit=%s stderr=%s",
+            result.returncode,
+            result.stderr[-1000:],
+        )
+    return {
+        "success": success,
+        "source": "baostock",
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
+    }
+
+
 @celery_app.task(name="engine.tasks.strategy_lab_daily_scan")
 def strategy_lab_daily_scan(lookback_days: int = 7) -> dict[str, Any]:
     """Run all watched Strategy Lab scripts and persist today's signals."""

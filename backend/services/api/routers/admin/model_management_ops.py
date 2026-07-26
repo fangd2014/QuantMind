@@ -47,6 +47,14 @@ from .model_management_utils import (
 router = APIRouter(dependencies=[Depends(require_admin)])  # 路由器级认证兜底
 
 
+class OfficialDataUpdateRequest(BaseModel):
+    api_base_url: str | None = Field(default=None)
+    access_key: str | None = Field(default=None)
+    secret_key: str | None = Field(default=None)
+    version: str | None = Field(default=None)
+    dry_run: bool = Field(default=False)
+
+
 @router.get("/scan", summary="扫描本地模型目录")
 async def scan_model_directories(
     refresh: bool = Query(False, description="是否强制重新扫描（绕过 Redis 缓存）"),
@@ -295,6 +303,84 @@ async def sync_stock_daily_latest(
     raise HTTPException(
         status_code=410, detail="该接口已废弃，数据由官方服务器统一推送，无需手动同步"
     )
+
+
+@router.post(
+    "/sync-official-data-update",
+    summary="一键拉取并应用官方数据增量包",
+)
+async def sync_official_data_update(
+    payload: OfficialDataUpdateRequest,
+    current_user: dict = Depends(require_admin),
+):
+    _ = current_user
+    source = os.getenv("DATA_UPDATE_SOURCE", "baostock").strip().lower()
+    official_values = {
+        "api_base_url": (
+            payload.api_base_url or os.getenv("QUANTMIND_UPDATE_API_BASE", "")
+        ).strip(),
+        "access_key": (
+            payload.access_key or os.getenv("QUANTMIND_ACCESS_KEY", "")
+        ).strip(),
+        "secret_key": (
+            payload.secret_key or os.getenv("QUANTMIND_SECRET_KEY", "")
+        ).strip(),
+    }
+    if source == "official" or all(official_values.values()):
+        missing = [key for key, value in official_values.items() if not value]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"官方增量源缺少配置: {', '.join(missing)}",
+            )
+        cmd = [
+            sys.executable,
+            "/app/backend/scripts/sync_official_data_update.py",
+        ]
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "QUANTMIND_UPDATE_API_BASE": official_values["api_base_url"],
+                "QUANTMIND_ACCESS_KEY": official_values["access_key"],
+                "QUANTMIND_SECRET_KEY": official_values["secret_key"],
+            }
+        )
+        if payload.version:
+            cmd.extend(["--version", payload.version])
+        if payload.dry_run:
+            cmd.append("--dry-run")
+        resolved_source = "official"
+    else:
+        cmd = [
+            sys.executable,
+            "/app/scripts/data/maintenance/sync_daily_from_baostock.py",
+        ]
+        if not payload.dry_run:
+            cmd.append("--apply")
+        resolved_source = "baostock"
+        child_env = None
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            check=False,
+            env=child_env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"数据同步执行超时: {exc}") from exc
+
+    return {
+        "success": proc.returncode == 0,
+        "source": resolved_source,
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout[-4000:] if proc.stdout else "",
+        "stderr": proc.stderr[-4000:] if proc.stderr else "",
+        "error": None if proc.returncode == 0 else "数据同步执行失败，请查看 stderr",
+    }
 
 
 @router.post(
@@ -1245,4 +1331,3 @@ def _serialize_backtest_result(result: Any) -> dict[str, Any]:
         "errors": result.errors,
         "warnings": result.warnings,
     }
-

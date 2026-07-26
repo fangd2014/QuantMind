@@ -97,8 +97,8 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-quantmind2026}
       - DATABASE_URL=postgresql+asyncpg://${DB_USER:-quantmind}:${DB_PASSWORD:-quantmind2026}@db:5432/${DB_NAME:-quantmind}
 
-      # 远程数据源配置（用于从官方数据库拉取增量数据）
-      - SOURCE_DATABASE_URL=${SOURCE_DATABASE_URL:-postgresql://user:pass@localhost:5432/quantmind}
+      # OSS 每日基础行情增量源；不再依赖已下线的远程 PostgreSQL。
+      - DATA_UPDATE_SOURCE=${DATA_UPDATE_SOURCE:-baostock}
 
       # Redis 配置
       - REDIS_HOST=redis
