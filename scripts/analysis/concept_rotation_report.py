@@ -3,9 +3,9 @@
 
 The report combines concept breadth, an RRG-style relative-strength model and
 leader confirmation.  It reads only the local ``stock_daily_latest`` table,
-uses Sina Finance for current concept membership, writes a PDF under the API's
-``/uploads`` directory and optionally sends a summary plus the PDF URL through
-a Feishu custom webhook.
+uses Sina Finance for current concept membership, writes PDF and interactive
+HTML reports under the API's ``/uploads`` directory and optionally sends both
+report URLs through a Feishu custom webhook.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,7 @@ DEFAULT_PUBLIC_BASE_URL = "http://192.168.5.10:18000"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a concept rotation PDF and notify Feishu"
+        description="Generate concept rotation PDF/HTML reports and notify Feishu"
     )
     parser.add_argument(
         "--output-dir",
@@ -870,6 +871,13 @@ def build_report(
         "rs_momentum",
         "breadth20",
         "breadth_delta5",
+        "member_count",
+        "mapped_count",
+        "coverage",
+        "leader_symbol",
+        "leader_name",
+        "leader_confirmed",
+        "eligible",
     ]
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1235,7 +1243,395 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
     temp_target.replace(target)
 
 
-def build_feishu_payload(report: dict[str, Any], pdf_url: str) -> dict[str, Any]:
+def render_interactive_html(report: dict[str, Any], target: Path) -> None:
+    """Render a self-contained, searchable RRG report for static hosting."""
+    import plotly.graph_objects as go
+    import plotly.io as pio
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    boards = sorted(
+        report.get("plot", []),
+        key=lambda item: float(item.get("score") or 0),
+        reverse=True,
+    )
+    colors = {
+        "领先区": "#16835d",
+        "改善区": "#ca8a04",
+        "转弱区": "#dc5a4d",
+        "落后区": "#77808f",
+    }
+
+    def number(item: dict[str, Any], key: str, default: float = 0.0) -> float:
+        try:
+            value = float(item.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) else default
+
+    x_values = [number(item, "rs_ratio", 100.0) for item in boards]
+    y_values = [number(item, "rs_momentum", 100.0) for item in boards]
+    x_delta = max([abs(value - 100) for value in x_values] + [5.0]) * 1.08
+    y_delta = max([abs(value - 100) for value in y_values] + [5.0]) * 1.08
+
+    def custom_data(item: dict[str, Any]) -> list[Any]:
+        return [
+            item.get("code", ""),
+            item.get("quadrant", "未知"),
+            number(item, "score"),
+            number(item, "breadth20"),
+            number(item, "breadth_delta5"),
+            int(number(item, "member_count")),
+            int(number(item, "mapped_count")),
+            number(item, "coverage"),
+            item.get("leader_name") or "待识别",
+            item.get("leader_symbol") or "-",
+            bool(item.get("leader_confirmed")),
+            bool(item.get("eligible")),
+        ]
+
+    figure = go.Figure(
+        go.Scatter(
+            x=x_values,
+            y=y_values,
+            mode="markers",
+            text=[item.get("name") or item.get("code") or "未命名" for item in boards],
+            customdata=[custom_data(item) for item in boards],
+            marker={
+                "size": [
+                    14 + min(max(number(item, "score"), 0), 100) * 0.32
+                    for item in boards
+                ],
+                "color": [
+                    colors.get(str(item.get("quadrant")), "#45627d") for item in boards
+                ],
+                "opacity": 0.82,
+                "line": {"color": "#ffffff", "width": 1},
+            },
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "象限：%{customdata[1]}<br>"
+                "综合得分：%{customdata[2]:.1f}<br>"
+                "RS-Ratio：%{x:.2f}<br>"
+                "RS-Momentum：%{y:.2f}<br>"
+                "扩散度：%{customdata[3]:.1%}<br>"
+                "5日扩散变化：%{customdata[4]:+.1%}<br>"
+                "覆盖：%{customdata[6]}/%{customdata[5]} (%{customdata[7]:.1%})<br>"
+                "龙头：%{customdata[8]} %{customdata[9]}"
+                "<extra>点击查看完整信息</extra>"
+            ),
+        )
+    )
+    figure.update_layout(
+        autosize=True,
+        height=570,
+        margin={"l": 62, "r": 24, "t": 42, "b": 58},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={
+            "family": "-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif"
+        },
+        showlegend=False,
+        hoverlabel={"align": "left"},
+        xaxis={
+            "title": "RS-Ratio（相对强度）",
+            "range": [100 - x_delta, 100 + x_delta],
+            "gridcolor": "rgba(113,128,150,.18)",
+            "zeroline": False,
+        },
+        yaxis={
+            "title": "RS-Momentum（相对动量）",
+            "range": [100 - y_delta, 100 + y_delta],
+            "gridcolor": "rgba(113,128,150,.18)",
+            "zeroline": False,
+        },
+        shapes=[
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": 100,
+                "x1": 100 + x_delta,
+                "y0": 100,
+                "y1": 100 + y_delta,
+                "fillcolor": "rgba(22,131,93,.10)",
+                "line": {"width": 0},
+                "layer": "below",
+            },
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": 100 - x_delta,
+                "x1": 100,
+                "y0": 100,
+                "y1": 100 + y_delta,
+                "fillcolor": "rgba(202,138,4,.10)",
+                "line": {"width": 0},
+                "layer": "below",
+            },
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": 100,
+                "x1": 100 + x_delta,
+                "y0": 100 - y_delta,
+                "y1": 100,
+                "fillcolor": "rgba(220,90,77,.09)",
+                "line": {"width": 0},
+                "layer": "below",
+            },
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": 100 - x_delta,
+                "x1": 100,
+                "y0": 100 - y_delta,
+                "y1": 100,
+                "fillcolor": "rgba(119,128,143,.09)",
+                "line": {"width": 0},
+                "layer": "below",
+            },
+            {
+                "type": "line",
+                "x0": 100,
+                "x1": 100,
+                "y0": 100 - y_delta,
+                "y1": 100 + y_delta,
+                "line": {"color": "#738095", "width": 1},
+            },
+            {
+                "type": "line",
+                "x0": 100 - x_delta,
+                "x1": 100 + x_delta,
+                "y0": 100,
+                "y1": 100,
+                "line": {"color": "#738095", "width": 1},
+            },
+        ],
+        annotations=[
+            {
+                "x": 0.98,
+                "y": 0.97,
+                "xref": "paper",
+                "yref": "paper",
+                "text": "领先区",
+                "showarrow": False,
+            },
+            {
+                "x": 0.02,
+                "y": 0.97,
+                "xref": "paper",
+                "yref": "paper",
+                "text": "改善区",
+                "showarrow": False,
+            },
+            {
+                "x": 0.98,
+                "y": 0.03,
+                "xref": "paper",
+                "yref": "paper",
+                "text": "转弱区",
+                "showarrow": False,
+            },
+            {
+                "x": 0.02,
+                "y": 0.03,
+                "xref": "paper",
+                "yref": "paper",
+                "text": "落后区",
+                "showarrow": False,
+            },
+        ],
+    )
+    chart = pio.to_html(
+        figure,
+        include_plotlyjs=True,
+        full_html=False,
+        div_id="rrg-chart",
+        config={
+            "responsive": True,
+            "displaylogo": False,
+            "scrollZoom": True,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        },
+    )
+    embedded_data = (
+        json.dumps(boards, ensure_ascii=False, allow_nan=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+    market = report.get("market", {})
+    report_date = escape(str(market.get("latest_date", "-")))
+    regime = escape(str(market.get("regime", "未知")))
+    generated_at = escape(str(report.get("generated_at", "")))
+    html_document = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="QuantMind 概念板块 RRG 四象限日报">
+  <title>QuantMind 概念轮动 {report_date}</title>
+  <style>
+    :root {{ color-scheme: light dark; --bg:#f3f6f9; --surface:#fff; --text:#172235; --muted:#647085; --border:#dce3ea; --accent:#173a5e; --soft:#eaf0f5; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }}
+    main {{ width:min(1480px,100%); margin:0 auto; padding:26px; }}
+    header {{ display:flex; justify-content:space-between; gap:20px; align-items:flex-end; margin-bottom:20px; }}
+    h1 {{ margin:0 0 7px; font-size:clamp(24px,3vw,38px); font-weight:650; letter-spacing:-.025em; }}
+    .subtitle,.hint,.meta {{ color:var(--muted); }}
+    .subtitle {{ margin:0; }}
+    .status {{ padding:8px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); white-space:nowrap; }}
+    .toolbar {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; align-items:center; }}
+    label {{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }}
+    input,select,button {{ min-height:42px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); padding:9px 12px; font:inherit; }}
+    input {{ flex:1 1 260px; }}
+    select {{ flex:0 1 180px; }}
+    button {{ cursor:pointer; font-weight:600; }}
+    button:hover {{ border-color:var(--accent); }}
+    input:focus-visible,select:focus-visible,button:focus-visible {{ outline:3px solid color-mix(in srgb,var(--accent) 28%,transparent); outline-offset:2px; }}
+    .count {{ margin-left:auto; color:var(--muted); }}
+    .workspace {{ display:grid; grid-template-columns:minmax(0,2.25fr) minmax(300px,.75fr); gap:16px; align-items:start; }}
+    .panel {{ background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:0 8px 30px rgba(24,42,64,.06); }}
+    .chart-panel {{ padding:8px; min-width:0; }}
+    #rrg-chart {{ width:100%; min-height:540px; }}
+    .legend {{ display:flex; flex-wrap:wrap; gap:14px; padding:0 16px 14px; color:var(--muted); font-size:14px; }}
+    .legend span::before {{ content:""; display:inline-block; width:9px; height:9px; margin-right:6px; border-radius:50%; background:var(--dot); }}
+    .detail {{ padding:22px; position:sticky; top:16px; }}
+    .eyebrow {{ color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.08em; }}
+    h2 {{ margin:6px 0 3px; font-size:26px; }}
+    .code {{ color:var(--muted); font-variant-numeric:tabular-nums; }}
+    dl {{ display:grid; grid-template-columns:1fr 1fr; gap:0; margin:18px 0; }}
+    .metric {{ padding:13px 0; border-top:1px solid var(--border); }}
+    .metric:nth-child(odd) {{ padding-right:12px; }}
+    dt {{ color:var(--muted); font-size:13px; }}
+    dd {{ margin:5px 0 0; font-size:18px; font-weight:650; font-variant-numeric:tabular-nums; }}
+    .leader {{ padding:14px; border-radius:10px; background:var(--soft); }}
+    .leader strong {{ display:block; margin-top:5px; }}
+    .badge {{ display:inline-block; margin-top:12px; padding:5px 9px; border-radius:999px; background:var(--soft); color:var(--text); font-size:13px; }}
+    footer {{ margin-top:17px; color:var(--muted); font-size:13px; line-height:1.65; }}
+    @media (prefers-color-scheme:dark) {{ :root {{ --bg:#101722; --surface:#172130; --text:#edf3f8; --muted:#aab6c4; --border:#2d3a4a; --accent:#85baf0; --soft:#202d3e; }} .panel {{ box-shadow:none; }} }}
+    @media (max-width:900px) {{ main {{ padding:18px; }} header {{ align-items:flex-start; flex-direction:column; }} .workspace {{ grid-template-columns:1fr; }} .detail {{ position:static; }} .count {{ width:100%; margin-left:0; }} }}
+    @media (max-width:520px) {{ main {{ padding:12px; }} .toolbar > * {{ flex:1 1 100%; }} #rrg-chart {{ min-height:430px; }} dl {{ grid-template-columns:1fr; }} .metric:nth-child(odd) {{ padding-right:0; }} }}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>概念板块 RRG 四象限</h1>
+      <p class="subtitle">数据日期 {report_date} · 悬停查看指标，点击板块查看完整信息</p>
+    </div>
+    <div class="status">市场状态：<strong>{regime}</strong></div>
+  </header>
+  <section class="toolbar" aria-label="板块筛选">
+    <label for="board-search">搜索概念板块</label>
+    <input id="board-search" type="search" placeholder="搜索板块名称或代码" autocomplete="off">
+    <label for="quadrant-filter">筛选象限</label>
+    <select id="quadrant-filter">
+      <option value="">全部象限</option>
+      <option value="领先区">领先区</option>
+      <option value="改善区">改善区</option>
+      <option value="转弱区">转弱区</option>
+      <option value="落后区">落后区</option>
+    </select>
+    <button id="reset-filter" type="button">重置筛选</button>
+    <span id="visible-count" class="count" aria-live="polite"></span>
+  </section>
+  <div class="workspace">
+    <section class="panel chart-panel" aria-label="概念板块四象限散点图">
+      {chart}
+      <div class="legend" aria-label="象限图例">
+        <span style="--dot:#16835d">领先区</span><span style="--dot:#ca8a04">改善区</span>
+        <span style="--dot:#dc5a4d">转弱区</span><span style="--dot:#77808f">落后区</span>
+      </div>
+    </section>
+    <aside id="board-detail" class="panel detail" aria-live="polite">
+      <div class="eyebrow" id="detail-quadrant">选择板块</div>
+      <h2 id="detail-name">暂无数据</h2>
+      <div id="detail-code" class="code">-</div>
+      <dl>
+        <div class="metric"><dt>综合得分</dt><dd id="detail-score">-</dd></div>
+        <div class="metric"><dt>RS-Ratio</dt><dd id="detail-ratio">-</dd></div>
+        <div class="metric"><dt>RS-Momentum</dt><dd id="detail-momentum">-</dd></div>
+        <div class="metric"><dt>扩散度</dt><dd id="detail-breadth">-</dd></div>
+        <div class="metric"><dt>5日扩散变化</dt><dd id="detail-delta">-</dd></div>
+        <div class="metric"><dt>成分覆盖</dt><dd id="detail-coverage">-</dd></div>
+      </dl>
+      <div class="leader"><span class="meta">板块龙头</span><strong id="detail-leader">-</strong><span id="detail-confirmation" class="badge">待确认</span></div>
+      <div id="detail-eligible" class="badge">未进入严格候选</div>
+    </aside>
+  </div>
+  <footer>点位大小代表综合得分；虚线之外的缩放可通过图表工具栏重置。扩散度使用自由流通市值加权，RRG 以全 A 加权组合为基准。页面仅供量化研究，不构成投资建议。<br><span class="meta">生成时间：{generated_at or "-"}</span></footer>
+</main>
+<script>
+  const allBoards = {embedded_data};
+  const quadrantColors = {{"领先区":"#16835d","改善区":"#ca8a04","转弱区":"#dc5a4d","落后区":"#77808f"}};
+  const graph = document.getElementById("rrg-chart");
+  const search = document.getElementById("board-search");
+  const quadrant = document.getElementById("quadrant-filter");
+  const count = document.getElementById("visible-count");
+  const value = (item, key, fallback = 0) => Number.isFinite(Number(item[key])) ? Number(item[key]) : fallback;
+  const percent = number => `${{(Number(number) * 100).toFixed(1)}}%`;
+  const signedPercent = number => `${{number >= 0 ? "+" : ""}}${{percent(number)}}`;
+  const custom = item => [item.code || "", item.quadrant || "未知", value(item,"score"), value(item,"breadth20"), value(item,"breadth_delta5"), value(item,"member_count"), value(item,"mapped_count"), value(item,"coverage"), item.leader_name || "待识别", item.leader_symbol || "-", Boolean(item.leader_confirmed), Boolean(item.eligible)];
+
+  function showDetail(item) {{
+    if (!item) return;
+    document.getElementById("detail-quadrant").textContent = item.quadrant || "未知象限";
+    document.getElementById("detail-name").textContent = item.name || "未命名";
+    document.getElementById("detail-code").textContent = item.code || "-";
+    document.getElementById("detail-score").textContent = value(item,"score").toFixed(1);
+    document.getElementById("detail-ratio").textContent = value(item,"rs_ratio",100).toFixed(2);
+    document.getElementById("detail-momentum").textContent = value(item,"rs_momentum",100).toFixed(2);
+    document.getElementById("detail-breadth").textContent = percent(value(item,"breadth20"));
+    document.getElementById("detail-delta").textContent = signedPercent(value(item,"breadth_delta5"));
+    document.getElementById("detail-coverage").textContent = `${{Math.round(value(item,"mapped_count"))}} / ${{Math.round(value(item,"member_count"))}} (${{percent(value(item,"coverage"))}})`;
+    document.getElementById("detail-leader").textContent = `${{item.leader_name || "待识别"}} · ${{item.leader_symbol || "-"}}`;
+    document.getElementById("detail-confirmation").textContent = item.leader_confirmed ? "龙头已确认" : "龙头待确认";
+    document.getElementById("detail-eligible").textContent = item.eligible ? "进入严格候选" : "未进入严格候选";
+  }}
+
+  function applyFilters() {{
+    const query = search.value.trim().toLocaleLowerCase("zh-CN");
+    const selectedQuadrant = quadrant.value;
+    const filtered = allBoards.filter(item => (!selectedQuadrant || item.quadrant === selectedQuadrant) && (!query || `${{item.name || ""}} ${{item.code || ""}}`.toLocaleLowerCase("zh-CN").includes(query)));
+    Plotly.restyle(graph, {{
+      x: [filtered.map(item => value(item,"rs_ratio",100))],
+      y: [filtered.map(item => value(item,"rs_momentum",100))],
+      text: [filtered.map(item => item.name || item.code || "未命名")],
+      customdata: [filtered.map(custom)],
+      "marker.size": [filtered.map(item => 14 + Math.min(Math.max(value(item,"score"),0),100) * .32)],
+      "marker.color": [filtered.map(item => quadrantColors[item.quadrant] || "#45627d")]
+    }}, [0]);
+    count.textContent = `显示 ${{filtered.length}} / ${{allBoards.length}} 个板块`;
+    if (filtered.length) showDetail(filtered[0]);
+    return filtered;
+  }}
+
+  graph.on("plotly_click", event => {{
+    const code = event.points?.[0]?.customdata?.[0];
+    showDetail(allBoards.find(item => item.code === code));
+  }});
+  search.addEventListener("input", applyFilters);
+  quadrant.addEventListener("change", applyFilters);
+  document.getElementById("reset-filter").addEventListener("click", () => {{ search.value = ""; quadrant.value = ""; applyFilters(); search.focus(); }});
+  count.textContent = `显示 ${{allBoards.length}} / ${{allBoards.length}} 个板块`;
+  if (allBoards.length) showDetail(allBoards[0]);
+</script>
+</body>
+</html>
+"""
+    temp_target = target.with_suffix(".tmp.html")
+    temp_target.write_text(html_document, encoding="utf-8")
+    temp_target.replace(target)
+
+
+def build_feishu_payload(
+    report: dict[str, Any], pdf_url: str, html_url: str
+) -> dict[str, Any]:
     market = report["market"]
     top = (
         "、".join(
@@ -1268,6 +1664,8 @@ def build_feishu_payload(report: dict[str, Any], pdf_url: str) -> dict[str, Any]
         [{"tag": "text", "text": f"次日条件候选：{buys}"}],
         [{"tag": "text", "text": f"观察池：{watches}"}],
         [
+            {"tag": "a", "text": "查看交互四象限", "href": html_url},
+            {"tag": "text", "text": "　|　"},
             {"tag": "a", "text": "下载完整 PDF 报告", "href": pdf_url},
         ],
         [
@@ -1334,21 +1732,26 @@ def send_feishu(
 
 def write_outputs(
     report: dict[str, Any], boards: pd.DataFrame, output_dir: Path
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     date_token = str(report["market"]["latest_date"]).replace("-", "")
     json_path = output_dir / f"concept_rotation_{date_token}.json"
     csv_path = output_dir / f"concept_rotation_all_{date_token}.csv"
     pdf_path = output_dir / f"concept_rotation_{date_token}.pdf"
+    html_path = output_dir / f"concept_rotation_{date_token}.html"
+    latest_pdf_path = output_dir / "latest.pdf"
+    latest_html_path = output_dir / "latest.html"
     json_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
     boards.sort_values("score", ascending=False).to_csv(csv_path, index=False)
     render_report_pdf(report, pdf_path)
-    shutil.copyfile(pdf_path, output_dir / "latest.pdf")
+    render_interactive_html(report, html_path)
+    shutil.copyfile(pdf_path, latest_pdf_path)
+    shutil.copyfile(html_path, latest_html_path)
     shutil.copyfile(json_path, output_dir / "latest.json")
-    return pdf_path, output_dir / "latest.pdf"
+    return pdf_path, latest_pdf_path, html_path, latest_html_path
 
 
 def main() -> int:
@@ -1374,24 +1777,30 @@ def main() -> int:
         max_buy=args.max_buy,
         max_watch=args.max_watch,
     )
-    pdf_path, _latest_path = write_outputs(report, boards, output_dir)
+    pdf_path, _latest_pdf_path, html_path, _latest_html_path = write_outputs(
+        report, boards, output_dir
+    )
     base_url = args.public_base_url.rstrip("/")
     uploads_root = output_dir.parents[1]
-    relative = pdf_path.relative_to(uploads_root)
-    pdf_url = f"{base_url}/uploads/{relative.as_posix()}"
-    LOGGER.info("Report generated: %s", pdf_path)
+    pdf_relative = pdf_path.relative_to(uploads_root)
+    html_relative = html_path.relative_to(uploads_root)
+    pdf_url = f"{base_url}/uploads/{pdf_relative.as_posix()}"
+    html_url = f"{base_url}/uploads/{html_relative.as_posix()}"
+    LOGGER.info("Reports generated: PDF=%s HTML=%s", pdf_path, html_path)
     if args.send_feishu:
         webhook = os.getenv("WEB_HOOK", "").strip()
         if not webhook:
             raise RuntimeError("WEB_HOOK is empty; PDF was generated but not sent")
-        send_feishu(webhook, build_feishu_payload(report, pdf_url))
-        LOGGER.info("Feishu notification sent with PDF URL: %s", pdf_url)
+        send_feishu(webhook, build_feishu_payload(report, pdf_url, html_url))
+        LOGGER.info("Feishu notification sent with PDF=%s HTML=%s", pdf_url, html_url)
     print(
         json.dumps(
             {
                 "data_date": report["market"]["latest_date"],
                 "pdf": str(pdf_path),
                 "pdf_url": pdf_url,
+                "html": str(html_path),
+                "html_url": html_url,
                 "buy_candidates": len(report["buy_candidates"]),
                 "watchlist": len(report["watchlist"]),
                 "feishu_sent": bool(args.send_feishu),
