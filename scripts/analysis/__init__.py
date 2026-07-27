@@ -1,0 +1,1 @@
+"""QuantMind analysis jobs."""

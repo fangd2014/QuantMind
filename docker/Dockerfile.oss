@@ -48,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-client \
       rsync \
       sshpass \
+      fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
