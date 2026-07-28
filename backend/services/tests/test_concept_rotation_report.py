@@ -8,12 +8,70 @@ from scripts.analysis.concept_rotation_report import (
     build_feishu_payload,
     build_stock_recommendations,
     classify_quadrant,
+    load_sw_industry_universe,
     normalize_symbol,
     prepare_stock_history,
     render_interactive_html,
     render_report_pdf,
     write_outputs,
 )
+
+
+def test_load_sw_industry_universe_uses_sw2021_l1_and_cache(
+    tmp_path: Path,
+) -> None:
+    industries = [
+        {
+            "index_code": f"801{index:03d}.SI",
+            "industry_name": f"申万行业{index}",
+            "level": "L1",
+            "src": "SW2021",
+        }
+        for index in range(1, 32)
+    ]
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_query(
+        api_name: str,
+        params: dict[str, str],
+        _fields: tuple[str, ...],
+    ) -> list[dict[str, str]]:
+        calls.append((api_name, params))
+        if api_name == "index_classify":
+            return industries
+        return [
+            {
+                "l1_code": params["l1_code"],
+                "ts_code": f"600{member:03d}.SH",
+                "name": f"成分股{member}",
+                "is_new": "Y",
+            }
+            for member in range(1, 9)
+        ]
+
+    boards, memberships = load_sw_industry_universe(
+        tmp_path, cache_days=7, query=fake_query
+    )
+
+    assert len(boards) == 31
+    assert boards[0]["code"] == "801001.SI"
+    assert boards[0]["name"] == "申万行业1"
+    assert len(memberships["801001.SI"]) == 8
+    assert calls[0] == (
+        "index_classify",
+        {"level": "L1", "src": "SW2021"},
+    )
+    assert sum(name == "index_member_all" for name, _params in calls) == 31
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("fresh cache should avoid Tushare requests")
+
+    cached_boards, cached_memberships = load_sw_industry_universe(
+        tmp_path, cache_days=7, query=fail_if_called
+    )
+
+    assert cached_boards == boards
+    assert cached_memberships == memberships
 
 
 def test_normalize_symbol_uses_quantmind_prefix_format() -> None:
@@ -35,16 +93,16 @@ def test_stock_recommendations_filter_and_deduplicate() -> None:
     boards = pd.DataFrame(
         [
             {
-                "code": "gn_ai",
-                "name": "人工智能",
+                "code": "801080.SI",
+                "name": "电子",
                 "score": 91.0,
                 "quadrant": "领先区",
                 "breadth_delta5": 0.12,
                 "eligible": True,
             },
             {
-                "code": "gn_robot",
-                "name": "机器人",
+                "code": "801890.SI",
+                "name": "机械设备",
                 "score": 86.0,
                 "quadrant": "改善区",
                 "breadth_delta5": 0.08,
@@ -111,8 +169,8 @@ def test_stock_recommendations_filter_and_deduplicate() -> None:
         ]
     )
     memberships = {
-        "gn_ai": {"SH600001", "SZ000002", "SZ000003"},
-        "gn_robot": {"SH600001", "SZ000002"},
+        "801080.SI": {"SH600001", "SZ000002", "SZ000003"},
+        "801890.SI": {"SH600001", "SZ000002"},
     }
 
     buy, watch = build_stock_recommendations(
@@ -120,7 +178,7 @@ def test_stock_recommendations_filter_and_deduplicate() -> None:
     )
 
     assert [item["symbol"] for item in buy] == ["SH600001"]
-    assert buy[0]["concept_name"] == "人工智能"
+    assert buy[0]["industry_name"] == "电子"
     assert buy[0]["turnover_rate"] == 8.0
     assert [item["symbol"] for item in watch] == ["SZ000002"]
     assert "量能未达到1.05倍" in watch[0]["unmet_conditions"]
@@ -160,8 +218,8 @@ def test_stock_recommendations_honor_empty_strict_eligibility() -> None:
     boards = pd.DataFrame(
         [
             {
-                "code": "gn_ai",
-                "name": "人工智能",
+                "code": "801080.SI",
+                "name": "电子",
                 "score": 91.0,
                 "quadrant": "领先区",
                 "breadth_delta5": 0.12,
@@ -192,7 +250,9 @@ def test_stock_recommendations_honor_empty_strict_eligibility() -> None:
         ]
     )
 
-    buy, watch = build_stock_recommendations(boards, latest, {"gn_ai": {"SH600001"}})
+    buy, watch = build_stock_recommendations(
+        boards, latest, {"801080.SI": {"SH600001"}}
+    )
 
     assert buy == []
     assert watch == []
@@ -201,12 +261,12 @@ def test_stock_recommendations_honor_empty_strict_eligibility() -> None:
 def test_feishu_payload_contains_report_links_and_candidates() -> None:
     report = {
         "market": {"latest_date": "2026-07-24", "regime": "活跃"},
-        "top": [{"name": "人工智能", "quadrant": "领先区"}],
+        "top": [{"name": "电子", "quadrant": "领先区"}],
         "buy_candidates": [
             {
                 "symbol": "SH600001",
                 "stock_name": "核心科技",
-                "concept_name": "人工智能",
+                "industry_name": "电子",
             }
         ],
         "watchlist": [],
@@ -233,8 +293,8 @@ def test_render_interactive_html_contains_filters_and_board_data(
         "market": {"latest_date": "2026-07-24", "regime": "活跃"},
         "plot": [
             {
-                "code": "gn_ai",
-                "name": "人工智能",
+                "code": "801080.SI",
+                "name": "电子",
                 "score": 91.0,
                 "quadrant": "领先区",
                 "rs_ratio": 108.0,
@@ -250,8 +310,8 @@ def test_render_interactive_html_contains_filters_and_board_data(
                 "eligible": True,
             },
             {
-                "code": "gn_robot",
-                "name": "机器人",
+                "code": "801890.SI",
+                "name": "机械设备",
                 "score": 80.0,
                 "quadrant": "改善区",
                 "rs_ratio": 96.0,
@@ -267,6 +327,32 @@ def test_render_interactive_html_contains_filters_and_board_data(
                 "eligible": False,
             },
         ],
+        "focus_industries": [
+            {
+                "code": "801080.SI",
+                "name": "电子",
+                "quadrant": "领先区",
+                "score": 91.0,
+                "breadth20": 0.72,
+                "breadth_delta5": 0.12,
+                "coverage": 0.93,
+                "leader_symbol": "SH600001",
+                "leader_name": "核心科技",
+                "leader_confirmed": True,
+            },
+            {
+                "code": "801890.SI",
+                "name": "机械设备",
+                "quadrant": "改善区",
+                "score": 80.0,
+                "breadth20": 0.64,
+                "breadth_delta5": 0.08,
+                "coverage": 0.91,
+                "leader_symbol": "SZ000002",
+                "leader_name": "趋势股份",
+                "leader_confirmed": False,
+            },
+        ],
     }
     target = tmp_path / "report.html"
 
@@ -274,8 +360,11 @@ def test_render_interactive_html_contains_filters_and_board_data(
 
     html = target.read_text(encoding="utf-8")
     assert html.startswith("<!doctype html>")
-    assert "人工智能" in html
+    assert "申万一级行业 RRG 四象限" in html
+    assert "电子" in html
     assert "核心科技" in html
+    assert 'id="industry-list"' in html
+    assert "领先区 / 改善区行业清单" in html
     assert 'id="board-search"' in html
     assert 'id="quadrant-filter"' in html
     assert 'id="board-detail"' in html
@@ -291,10 +380,11 @@ def test_write_outputs_publishes_dated_and_latest_html(
         "market": {"latest_date": "2026-07-24"},
         "plot": [],
         "top": [],
+        "focus_industries": [],
         "buy_candidates": [],
         "watchlist": [],
     }
-    boards = pd.DataFrame([{"code": "gn_ai", "score": 91.0}])
+    boards = pd.DataFrame([{"code": "801080.SI", "score": 91.0}])
 
     def fake_pdf(_report, target: Path) -> None:
         target.write_bytes(b"%PDF-test")
@@ -332,12 +422,12 @@ def test_render_report_pdf_smoke(tmp_path: Path) -> None:
             "limit_down": 0,
             "benchmark_5d": 0.03,
             "benchmark_20d": 0.06,
-            "concept_count": 2,
+            "industry_count": 2,
             "regime": "活跃",
         },
         "top": [
             {
-                "name": "人工智能",
+                "name": "电子",
                 "score": 91.0,
                 "quadrant": "领先区",
                 "rs_ratio": 108.0,
@@ -350,25 +440,39 @@ def test_render_report_pdf_smoke(tmp_path: Path) -> None:
         ],
         "plot": [
             {
-                "name": "人工智能",
+                "name": "电子",
                 "score": 91.0,
                 "quadrant": "领先区",
                 "rs_ratio": 108.0,
                 "rs_momentum": 105.0,
             },
             {
-                "name": "机器人",
+                "name": "机械设备",
                 "score": 80.0,
                 "quadrant": "改善区",
                 "rs_ratio": 96.0,
                 "rs_momentum": 104.0,
             },
         ],
+        "focus_industries": [
+            {
+                "code": "801080.SI",
+                "name": "电子",
+                "score": 91.0,
+                "quadrant": "领先区",
+                "breadth20": 0.72,
+                "breadth_delta5": 0.12,
+                "coverage": 0.93,
+                "leader_symbol": "SH600001",
+                "leader_name": "核心科技",
+                "leader_confirmed": True,
+            }
+        ],
         "buy_candidates": [
             {
                 "symbol": "SH600001",
                 "stock_name": "核心科技",
-                "concept_name": "人工智能",
+                "industry_name": "电子",
                 "stock_score": 92.0,
                 "ret5": 0.12,
                 "ret20": 0.18,
