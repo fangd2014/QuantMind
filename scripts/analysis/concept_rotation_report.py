@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Generate the daily concept-rotation report and notify Feishu.
+"""Generate the daily Shenwan industry-rotation report and notify Feishu.
 
-The report combines concept breadth, an RRG-style relative-strength model and
-leader confirmation.  It reads only the local ``stock_daily_latest`` table,
-uses Sina Finance for current concept membership, writes PDF and interactive
-HTML reports under the API's ``/uploads`` directory and optionally sends both
-report URLs through a Feishu custom webhook.
+The report combines SW2021 level-one industry breadth, an RRG-style
+relative-strength model and leader confirmation. It reads prices only from the
+local ``stock_daily_latest`` table, caches Tushare industry membership, writes
+PDF and interactive HTML reports under the API's ``/uploads`` directory and
+optionally sends both report URLs through a Feishu custom webhook.
 """
 
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import gzip
 import json
 import logging
@@ -22,8 +21,8 @@ import shutil
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime
 from html import escape
 from io import BytesIO
@@ -35,23 +34,9 @@ import pandas as pd
 import psycopg2
 
 
-LOGGER = logging.getLogger("concept_rotation_report")
-SINA_CONCEPT_URL = "https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class"
-SINA_MEMBER_URL = (
-    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-    "Market_Center.getHQNodeData"
-)
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
-    ),
-    "Referer": "https://money.finance.sina.com.cn/",
-}
-NON_THEMATIC_CONCEPT = re.compile(
-    r"(?:ST|超大盘|含H股|融资融券|基金重仓|保险重仓|QFII|社保重仓|"
-    r"央企50|业绩预|外资背景|信托重仓|券商重仓|未股改|转债标的|"
-    r"MSCI|沪股通|深股通|高送转|低价股|高价股|破净股|新股)"
-)
+LOGGER = logging.getLogger("sw_industry_rotation_report")
+TUSHARE_API_URL = "http://api.tushare.pro"
+SW_INDUSTRY_VERSION = "SW2021"
 DEFAULT_OUTPUT_DIR = "/data/uploads/reports/concept-rotation"
 DEFAULT_CACHE_DIR = "/data/cache/concept-rotation"
 DEFAULT_PUBLIC_BASE_URL = "http://192.168.5.10:18000"
@@ -59,7 +44,7 @@ DEFAULT_PUBLIC_BASE_URL = "http://192.168.5.10:18000"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate concept rotation PDF/HTML reports and notify Feishu"
+        description="Generate SW industry rotation PDF/HTML reports and notify Feishu"
     )
     parser.add_argument(
         "--output-dir",
@@ -125,149 +110,169 @@ def finite_number(value: Any) -> float | int | str | bool | None:
     return value
 
 
-def fetch_bytes(url: str, retries: int = 4, timeout: int = 40) -> bytes:
+def query_tushare(
+    api_name: str,
+    params: dict[str, str],
+    fields: tuple[str, ...],
+    retries: int = 4,
+) -> list[dict[str, Any]]:
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("TUSHARE_TOKEN is not configured")
+    body = json.dumps(
+        {
+            "api_name": api_name,
+            "token": token,
+            "params": params,
+            "fields": ",".join(fields),
+        }
+    ).encode("utf-8")
     last_error: Exception | None = None
     for attempt in range(retries):
+        if attempt == 0:
+            time.sleep(0.12)
         try:
-            request = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            request = urllib.request.Request(
+                TUSHARE_API_URL,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            code = int(result.get("code") or 0)
+            if code != 0:
+                message = str(result.get("msg") or f"Tushare error {code}")
+                if any(word in message for word in ("频率", "每分钟", "稍后")):
+                    raise RuntimeError(message)
+                raise ValueError(f"{api_name}: {message}")
+            data = result.get("data") or {}
+            names = list(data.get("fields") or [])
+            return [
+                dict(zip(names, row, strict=False)) for row in data.get("items") or []
+            ]
+        except (urllib.error.URLError, TimeoutError, RuntimeError, OSError) as exc:
             last_error = exc
             if attempt + 1 < retries:
-                time.sleep(1.0 * (attempt + 1))
-    raise RuntimeError(f"request failed after {retries} attempts: {last_error}")
+                time.sleep(2**attempt)
+    raise RuntimeError(
+        f"{api_name} request failed after {retries} attempts: {last_error}"
+    )
 
 
-def parse_concept_snapshot(text: str) -> list[dict[str, Any]]:
-    match = re.search(r"=\s*(\{.*\})\s*;?\s*$", text, flags=re.S)
-    if not match:
-        raise ValueError("Sina concept response did not contain the expected object")
-    raw = json.loads(match.group(1))
-    concepts: list[dict[str, Any]] = []
-    for code, value in raw.items():
-        parts = str(value).split(",")
-        if not str(code).startswith("gn_") or len(parts) < 13:
-            continue
-        try:
-            concepts.append(
-                {
-                    "code": str(code),
-                    "name": parts[1],
-                    "reported_count": int(float(parts[2] or 0)),
-                    "snapshot_pct": float(parts[5] or 0),
-                    "source_leader_symbol": parts[8],
-                    "source_leader_pct": float(parts[9] or 0),
-                    "source_leader_name": parts[12],
-                }
-            )
-        except (TypeError, ValueError):
-            continue
-    if len(concepts) < 30:
-        raise ValueError(f"Sina concept response contained only {len(concepts)} rows")
-    return concepts
+TushareQuery = Callable[[str, dict[str, str], tuple[str, ...]], list[dict[str, Any]]]
 
 
-def load_concepts(cache_dir: Path) -> list[dict[str, Any]]:
-    cache_path = cache_dir / "sina-concepts.json"
-    try:
-        payload = fetch_bytes(SINA_CONCEPT_URL)
-        text = payload.decode("gb18030", errors="replace")
-        concepts = parse_concept_snapshot(text)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(concepts, ensure_ascii=False), encoding="utf-8"
-        )
-        return concepts
-    except Exception:
-        if cache_path.exists():
-            LOGGER.exception("Concept snapshot fetch failed; using cached snapshot")
-            return json.loads(cache_path.read_text(encoding="utf-8"))
-        raise
-
-
-def fetch_members(concept_code: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for page in range(1, 16):
-        query = urllib.parse.urlencode(
-            {
-                "page": page,
-                "num": 100,
-                "sort": "symbol",
-                "asc": 1,
-                "node": concept_code,
-                "symbol": "",
-                "_s_r_a": "page",
-            }
-        )
-        payload = fetch_bytes(f"{SINA_MEMBER_URL}?{query}")
-        current = json.loads(payload.decode("gb18030", errors="replace"))
-        if not isinstance(current, list):
-            raise ValueError(f"Unexpected member schema for {concept_code}")
-        if not current:
-            break
-        rows.extend(item for item in current if isinstance(item, dict))
-        if len(current) < 100:
-            break
-    unique = {str(row.get("symbol")): row for row in rows if row.get("symbol")}
-    return list(unique.values())
-
-
-def load_memberships(
-    concepts: list[dict[str, Any]], cache_dir: Path, cache_days: float = 7.0
-) -> dict[str, list[dict[str, Any]]]:
-    cache_path = cache_dir / "sina-concept-members.json.gz"
-    stale_cache: dict[str, list[dict[str, Any]]] = {}
+def load_sw_industry_universe(
+    cache_dir: Path,
+    cache_days: float = 7.0,
+    query: TushareQuery | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Load SW2021 level-one industries and current constituents."""
+    cache_path = cache_dir / "tushare-sw2021-l1-universe.json.gz"
+    stale_payload: dict[str, Any] = {}
     if cache_path.exists():
-        with gzip.open(cache_path, "rt", encoding="utf-8") as handle:
-            candidate = json.load(handle)
-        if isinstance(candidate, dict):
-            stale_cache = candidate
-        age_days = (time.time() - cache_path.stat().st_mtime) / 86400
-        if age_days <= cache_days and len(stale_cache) >= len(concepts) * 0.90:
-            LOGGER.info("Using %.1f-day-old Sina membership cache", age_days)
-            return stale_cache
+        try:
+            with gzip.open(cache_path, "rt", encoding="utf-8") as handle:
+                candidate = json.load(handle)
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("version") == SW_INDUSTRY_VERSION
+                and isinstance(candidate.get("industries"), list)
+                and isinstance(candidate.get("memberships"), dict)
+            ):
+                stale_payload = candidate
+            age_days = (time.time() - cache_path.stat().st_mtime) / 86400
+            if (
+                age_days <= cache_days
+                and len(stale_payload.get("industries", [])) >= 28
+            ):
+                LOGGER.info("Using %.1f-day-old SW2021 industry cache", age_days)
+                return stale_payload["industries"], stale_payload["memberships"]
+        except (OSError, ValueError, json.JSONDecodeError):
+            LOGGER.exception("Ignoring invalid SW2021 industry cache")
 
-    memberships: dict[str, list[dict[str, Any]]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        jobs = {
-            pool.submit(fetch_members, concept["code"]): concept for concept in concepts
-        }
-        for index, job in enumerate(concurrent.futures.as_completed(jobs), 1):
-            concept = jobs[job]
-            try:
-                rows = job.result()
-                if len(rows) < 2:
-                    raise ValueError("too few members")
-                memberships[concept["code"]] = rows
-            except Exception as exc:
-                cached = stale_cache.get(concept["code"], [])
-                if cached:
-                    memberships[concept["code"]] = cached
-                    LOGGER.warning(
-                        "Using stale members for %s after fetch error: %s",
-                        concept["name"],
-                        exc,
-                    )
-                else:
-                    memberships[concept["code"]] = []
-                    LOGGER.error(
-                        "No members available for %s: %s", concept["name"], exc
-                    )
-            if index % 40 == 0:
-                LOGGER.info("Downloaded memberships %s/%s", index, len(concepts))
-
-    successful = sum(bool(rows) for rows in memberships.values())
-    if successful < len(concepts) * 0.75:
-        raise RuntimeError(
-            f"Only {successful}/{len(concepts)} concept memberships are available"
+    query_api = query or query_tushare
+    try:
+        classification = query_api(
+            "index_classify",
+            {"level": "L1", "src": SW_INDUSTRY_VERSION},
+            ("index_code", "industry_name", "level", "src"),
         )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = cache_path.with_suffix(".tmp")
-    with gzip.open(temp_path, "wt", encoding="utf-8") as handle:
-        json.dump(memberships, handle, ensure_ascii=False)
-    temp_path.replace(cache_path)
-    return memberships
+        industries = sorted(
+            [
+                {
+                    "code": str(item["index_code"]),
+                    "name": str(item["industry_name"]),
+                    "level": str(item.get("level") or "L1"),
+                    "source": str(item.get("src") or SW_INDUSTRY_VERSION),
+                }
+                for item in classification
+                if item.get("index_code") and item.get("industry_name")
+            ],
+            key=lambda item: item["code"],
+        )
+        if not 28 <= len(industries) <= 40:
+            raise ValueError(
+                f"Expected 28-40 SW2021 L1 industries, received {len(industries)}"
+            )
+
+        memberships: dict[str, list[dict[str, Any]]] = {}
+        for index, industry in enumerate(industries, 1):
+            code = industry["code"]
+            rows = query_api(
+                "index_member_all",
+                {"l1_code": code},
+                (
+                    "l1_code",
+                    "l1_name",
+                    "ts_code",
+                    "name",
+                    "in_date",
+                    "out_date",
+                    "is_new",
+                ),
+            )
+            current = [
+                {
+                    "symbol": str(item["ts_code"]),
+                    "name": str(item.get("name") or item["ts_code"]),
+                    "in_date": item.get("in_date"),
+                    "out_date": item.get("out_date"),
+                }
+                for item in rows
+                if item.get("ts_code") and str(item.get("is_new") or "Y").upper() == "Y"
+            ]
+            unique = {item["symbol"]: item for item in current}
+            memberships[code] = sorted(unique.values(), key=lambda item: item["symbol"])
+            industry["reported_count"] = len(memberships[code])
+            if index % 10 == 0:
+                LOGGER.info(
+                    "Downloaded SW2021 memberships %s/%s", index, len(industries)
+                )
+
+        successful = sum(len(rows) >= 5 for rows in memberships.values())
+        if successful < len(industries) * 0.90:
+            raise RuntimeError(
+                f"Only {successful}/{len(industries)} SW2021 memberships are usable"
+            )
+        payload = {
+            "version": SW_INDUSTRY_VERSION,
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "industries": industries,
+            "memberships": memberships,
+        }
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(".tmp")
+        with gzip.open(temp_path, "wt", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        temp_path.replace(cache_path)
+        return industries, memberships
+    except Exception:
+        if stale_payload:
+            LOGGER.exception("SW2021 fetch failed; using stale industry cache")
+            return stale_payload["industries"], stale_payload["memberships"]
+        raise
 
 
 def database_connection():
@@ -402,9 +407,9 @@ def weighted_return(frame: pd.DataFrame) -> float:
     return float(np.average(valid["pct_return"], weights=valid["market_weight"]))
 
 
-def analyze_concepts(
+def analyze_industries(
     stock: pd.DataFrame,
-    concepts: list[dict[str, Any]],
+    industries: list[dict[str, Any]],
     raw_memberships: dict[str, list[dict[str, Any]]],
 ) -> tuple[pd.DataFrame, dict[str, set[str]], dict[str, Any]]:
     dates = pd.Index(sorted(stock["trade_date"].dropna().unique()))
@@ -422,13 +427,13 @@ def analyze_concepts(
 
     member_sets: dict[str, set[str]] = {}
     results: list[dict[str, Any]] = []
-    for concept in concepts:
+    for industry in industries:
         symbols = {
             normalized
-            for row in raw_memberships.get(concept["code"], [])
+            for row in raw_memberships.get(industry["code"], [])
             if (normalized := normalize_symbol(str(row.get("symbol", ""))))
         }
-        member_sets[concept["code"]] = symbols
+        member_sets[industry["code"]] = symbols
         mapped = sorted(symbols.intersection(latest_by_symbol.index))
         if len(mapped) < 5:
             continue
@@ -522,7 +527,7 @@ def analyze_concepts(
         )
         results.append(
             {
-                **concept,
+                **industry,
                 "member_count": len(symbols),
                 "mapped_count": len(mapped),
                 "coverage": len(mapped) / max(len(symbols), 1),
@@ -541,11 +546,10 @@ def analyze_concepts(
 
     result = pd.DataFrame(results)
     if result.empty:
-        raise RuntimeError("No concepts passed the coverage and history checks")
+        raise RuntimeError("No SW industries passed the coverage and history checks")
     result = result[(result["member_count"] >= 8) & (result["coverage"] >= 0.60)]
-    result = result[~result["name"].str.contains(NON_THEMATIC_CONCEPT, na=False)]
     if len(result) < 4:
-        raise RuntimeError("Too few thematic concepts remain after validation")
+        raise RuntimeError("Too few SW industries remain after validation")
     result = result.copy()
     result["rs_ratio"] = 100 + 10 * zscore(result["ratio_raw"])
     result["rs_momentum"] = 100 + 10 * zscore(result["momentum_raw"])
@@ -605,7 +609,7 @@ def analyze_concepts(
         ),
         "benchmark_5d": float(benchmark_cum.iloc[-1] / benchmark_cum.iloc[-6] - 1),
         "benchmark_20d": float(benchmark_cum.iloc[-1] / benchmark_cum.iloc[-21] - 1),
-        "concept_count": int(len(result)),
+        "industry_count": int(len(result)),
         "expansion_cut": expansion_cut,
         "regime": regime,
     }
@@ -613,7 +617,7 @@ def analyze_concepts(
 
 
 def _stock_candidate_row(
-    row: pd.Series, concept: pd.Series, z5: float
+    row: pd.Series, industry: pd.Series, z5: float
 ) -> dict[str, Any]:
     amount_ratio = float(row["amount"] / row["amount_ma5_calc"])
     price_range = float(row["high"] - row["low"])
@@ -623,10 +627,10 @@ def _stock_candidate_row(
     return {
         "symbol": str(row["symbol"]),
         "stock_name": str(row.get("stock_name") or row["symbol"]),
-        "concept_code": str(concept["code"]),
-        "concept_name": str(concept["name"]),
-        "concept_score": float(concept["score"]),
-        "quadrant": str(concept["quadrant"]),
+        "industry_code": str(industry["code"]),
+        "industry_name": str(industry["name"]),
+        "industry_score": float(industry["score"]),
+        "quadrant": str(industry["quadrant"]),
         "close": float(row["close"]),
         "previous_low": float(row["low"]),
         "ma5": float(row["ma5_calc"]),
@@ -658,16 +662,16 @@ def build_stock_recommendations(
     buy_pool: list[dict[str, Any]] = []
     watch_pool: list[dict[str, Any]] = []
 
-    for _, concept in eligible.iterrows():
-        symbols = sorted(memberships.get(str(concept["code"]), set()))
+    for _, industry in eligible.iterrows():
+        symbols = sorted(memberships.get(str(industry["code"]), set()))
         mapped = [symbol for symbol in symbols if symbol in latest_by_symbol.index]
         if not mapped:
             continue
-        concept_stocks = latest_by_symbol.loc[mapped].copy()
-        if isinstance(concept_stocks, pd.Series):
-            concept_stocks = concept_stocks.to_frame().T
-        z5_values = zscore(concept_stocks["ret5_calc"])
-        for index, row in concept_stocks.iterrows():
+        industry_stocks = latest_by_symbol.loc[mapped].copy()
+        if isinstance(industry_stocks, pd.Series):
+            industry_stocks = industry_stocks.to_frame().T
+        z5_values = zscore(industry_stocks["ret5_calc"])
+        for index, row in industry_stocks.iterrows():
             name = str(row.get("stock_name") or "")
             is_st_value = pd.to_numeric(row.get("is_st"), errors="coerce")
             limit_up = pd.to_numeric(row.get("limit_up_today"), errors="coerce")
@@ -700,7 +704,7 @@ def build_stock_recommendations(
                 or row["amount"] < 0
             ):
                 continue
-            candidate = _stock_candidate_row(row, concept, z5_values.loc[index])
+            candidate = _stock_candidate_row(row, industry, z5_values.loc[index])
             numeric_values = [
                 candidate["amount_ratio"],
                 candidate["close_pos"],
@@ -725,7 +729,7 @@ def build_stock_recommendations(
             }
             unmet = [message for message, passed in conditions.items() if not passed]
             candidate["stock_score"] = float(
-                0.55 * candidate["concept_score"]
+                0.55 * candidate["industry_score"]
                 + 8.0 * min(max(candidate["z5"], 0), 3)
                 + 8.0 * min(candidate["amount_ratio"], 2.5)
                 + 8.0 * candidate["close_pos"]
@@ -757,15 +761,15 @@ def build_stock_recommendations(
     ) -> list[dict[str, Any]]:
         selected: list[dict[str, Any]] = []
         symbols = set(excluded or set())
-        concept_counts: dict[str, int] = {}
+        industry_counts: dict[str, int] = {}
         for item in sorted(pool, key=lambda value: value["stock_score"], reverse=True):
             symbol = item["symbol"]
-            concept_code = item["concept_code"]
-            if symbol in symbols or concept_counts.get(concept_code, 0) >= 2:
+            industry_code = item["industry_code"]
+            if symbol in symbols or industry_counts.get(industry_code, 0) >= 2:
                 continue
             selected.append(item)
             symbols.add(symbol)
-            concept_counts[concept_code] = concept_counts.get(concept_code, 0) + 1
+            industry_counts[industry_code] = industry_counts.get(industry_code, 0) + 1
             if len(selected) >= limit:
                 break
         return selected
@@ -786,13 +790,13 @@ def _records(frame: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
 
 def build_report(
     stock: pd.DataFrame,
-    concepts: list[dict[str, Any]],
+    industries: list[dict[str, Any]],
     memberships: dict[str, list[dict[str, Any]]],
     max_buy: int = 5,
     max_watch: int = 10,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     prepared = prepare_stock_history(stock)
-    boards, member_sets, market = analyze_concepts(prepared, concepts, memberships)
+    boards, member_sets, market = analyze_industries(prepared, industries, memberships)
     latest_date = prepared["trade_date"].max()
     latest = prepared[prepared["trade_date"] == latest_date].copy()
     buys, watches = build_stock_recommendations(
@@ -879,10 +883,32 @@ def build_report(
         "leader_confirmed",
         "eligible",
     ]
+    focus_columns = [
+        "code",
+        "name",
+        "quadrant",
+        "score",
+        "rs_ratio",
+        "rs_momentum",
+        "breadth20",
+        "breadth_delta5",
+        "member_count",
+        "mapped_count",
+        "coverage",
+        "leader_symbol",
+        "leader_name",
+        "leader_confirmed",
+        "eligible",
+    ]
+    focus = ranked[ranked["quadrant"].isin(["领先区", "改善区"])].copy()
+    focus["quadrant_order"] = focus["quadrant"].map({"领先区": 0, "改善区": 1})
+    focus = focus.sort_values(["quadrant_order", "score"], ascending=[True, False])
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "universe": "申万2021版一级行业",
         "market": market,
         "top": _records(top, top_columns),
+        "focus_industries": _records(focus, focus_columns),
         "plot": _records(ranked, plot_columns),
         "quadrant_counts": {
             str(key): int(value)
@@ -903,7 +929,9 @@ def build_report(
             "candidate_policy": (
                 "仅输出次日条件触发候选；退潮或过热环境自动降级为观察"
             ),
-            "membership": "新浪财经当前概念成分，使用7日缓存并做覆盖率校验",
+            "membership": (
+                "Tushare申万2021版一级行业及最新成分，使用7日缓存并做覆盖率校验"
+            ),
         },
     }
     return report, boards
@@ -968,7 +996,7 @@ def _rrg_chart(plot: list[dict[str, Any]]) -> BytesIO:
         )
     axis.set_xlabel("RS-Ratio（相对强度）", fontproperties=font)
     axis.set_ylabel("RS-Momentum（相对动量）", fontproperties=font)
-    axis.set_title("概念板块 RRG 四象限", fontproperties=font, fontsize=13)
+    axis.set_title("申万一级行业 RRG 四象限", fontproperties=font, fontsize=13)
     legend = axis.legend(loc="best", fontsize=8)
     if font:
         for label in legend.get_texts():
@@ -1104,7 +1132,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         canvas.saveState()
         canvas.setFont(font_name, 7)
         canvas.setFillColor(colors.HexColor("#697586"))
-        canvas.drawString(18 * mm, 10 * mm, "QuantMind 概念轮动日报 · 仅供研究")
+        canvas.drawString(18 * mm, 10 * mm, "QuantMind 申万行业轮动日报 · 仅供研究")
         canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"第 {document.page} 页")
         canvas.restoreState()
 
@@ -1117,11 +1145,11 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=17 * mm,
-        title=f"QuantMind 概念轮动日报 {market['latest_date']}",
+        title=f"QuantMind 申万行业轮动日报 {market['latest_date']}",
         author="QuantMind",
     )
     story: list[Any] = [
-        Paragraph("QuantMind 概念轮动与次日候选", title_style),
+        Paragraph("QuantMind 申万行业轮动与次日候选", title_style),
         Paragraph(
             f"数据日期：{market['latest_date']}　市场状态：{market['regime']}　"
             f"生成时间：{report.get('generated_at', datetime.now().isoformat(timespec='minutes'))}",
@@ -1153,11 +1181,11 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             Paragraph("RRG 四象限", heading_style),
             Image(_rrg_chart(report["plot"]), width=176 * mm, height=102 * mm),
             PageBreak(),
-            Paragraph("热门概念 Top 10", heading_style),
+            Paragraph("领先区 / 改善区行业清单", heading_style),
         ]
     )
-    board_rows = [["概念", "象限", "得分", "扩散度", "5日变化", "龙头", "确认"]]
-    for item in report.get("top", []):
+    board_rows = [["申万行业", "区域", "得分", "扩散度", "5日变化", "板块龙头", "确认"]]
+    for item in report.get("focus_industries", []):
         board_rows.append(
             [
                 item["name"],
@@ -1179,13 +1207,13 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         ]
     )
     buy_rows = [
-        ["代码/名称", "概念", "5/20日", "量比/换手", "收盘位", "次日触发与失效"]
+        ["代码/名称", "申万行业", "5/20日", "量比/换手", "收盘位", "次日触发与失效"]
     ]
     for item in report.get("buy_candidates", []):
         buy_rows.append(
             [
                 f"{item['symbol']}\n{item['stock_name']}",
-                item["concept_name"],
+                item["industry_name"],
                 f"{item['ret5']:.1%} / {item['ret20']:.1%}",
                 f"{item['amount_ratio']:.2f}x / {item['turnover_rate']:.1f}%",
                 f"{item['close_pos']:.0%}",
@@ -1203,12 +1231,12 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             Paragraph("观察池", heading_style),
         ]
     )
-    watch_rows = [["代码/名称", "概念", "5日", "量比", "收盘位", "尚未满足"]]
+    watch_rows = [["代码/名称", "申万行业", "5日", "量比", "收盘位", "尚未满足"]]
     for item in report.get("watchlist", []):
         watch_rows.append(
             [
                 f"{item['symbol']}\n{item['stock_name']}",
-                item["concept_name"],
+                item["industry_name"],
                 f"{item['ret5']:.1%}",
                 f"{item['amount_ratio']:.2f}x",
                 f"{item['close_pos']:.0%}",
@@ -1229,7 +1257,8 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
                     Paragraph("口径与风险提示", heading_style),
                     Paragraph(
                         "扩散度使用自由流通市值加权；RRG以全A加权组合为基准。"
-                        "当前概念成分来自新浪财经并应用于历史窗口，可能存在幸存者偏差。"
+                        "行业口径为Tushare申万2021版一级行业，最新成分应用于历史窗口，"
+                        "可能存在成分调整带来的幸存者偏差。"
                         "候选仅代表量价条件满足，不代表次日一定上涨；次日必须等待触发条件，"
                         "禁止追高，并结合仓位、止损、流动性和公告风险独立决策。"
                         "本报告仅用于量化研究，不构成投资建议。",
@@ -1467,13 +1496,37 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     report_date = escape(str(market.get("latest_date", "-")))
     regime = escape(str(market.get("regime", "未知")))
     generated_at = escape(str(report.get("generated_at", "")))
+    focus_rows: list[str] = []
+    for item in report.get("focus_industries", []):
+        code = escape(str(item.get("code") or "-"), quote=True)
+        name = escape(str(item.get("name") or "未命名"))
+        quadrant = escape(str(item.get("quadrant") or "未知"))
+        leader = escape(
+            f"{item.get('leader_name') or '待识别'} · "
+            f"{item.get('leader_symbol') or '-'}"
+        )
+        confirmation = "已确认" if item.get("leader_confirmed") else "待确认"
+        focus_rows.append(
+            "<tr>"
+            f'<td><button type="button" class="industry-link" data-code="{code}">'
+            f"{name}</button><small>{code}</small></td>"
+            f'<td><span class="quadrant-tag">{quadrant}</span></td>'
+            f'<td class="numeric">{number(item, "score"):.1f}</td>'
+            f'<td class="numeric">{number(item, "breadth20"):.1%}</td>'
+            f'<td class="numeric">{number(item, "breadth_delta5"):+.1%}</td>'
+            f"<td>{leader}<small>{confirmation}</small></td>"
+            "</tr>"
+        )
+    focus_table_rows = "".join(focus_rows) or (
+        '<tr><td colspan="6" class="empty-row">当前没有位于领先区或改善区的行业</td></tr>'
+    )
     html_document = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="QuantMind 概念板块 RRG 四象限日报">
-  <title>QuantMind 概念轮动 {report_date}</title>
+  <meta name="description" content="QuantMind 申万一级行业 RRG 四象限日报">
+  <title>QuantMind 申万行业轮动 {report_date}</title>
   <style>
     :root {{ color-scheme: light dark; --bg:#f3f6f9; --surface:#fff; --text:#172235; --muted:#647085; --border:#dce3ea; --accent:#173a5e; --soft:#eaf0f5; }}
     * {{ box-sizing:border-box; }}
@@ -1511,6 +1564,19 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     .leader {{ padding:14px; border-radius:10px; background:var(--soft); }}
     .leader strong {{ display:block; margin-top:5px; }}
     .badge {{ display:inline-block; margin-top:12px; padding:5px 9px; border-radius:999px; background:var(--soft); color:var(--text); font-size:13px; }}
+    .table-panel {{ margin-top:16px; padding:22px; }}
+    .table-panel h2 {{ margin:0 0 5px; }}
+    .table-panel > p {{ margin:0 0 16px; color:var(--muted); }}
+    .table-responsive {{ width:100%; overflow-x:auto; }}
+    table {{ width:100%; border-collapse:collapse; min-width:760px; }}
+    th,td {{ padding:12px 10px; border-bottom:1px solid var(--border); text-align:left; vertical-align:middle; }}
+    th {{ color:var(--muted); font-size:13px; font-weight:600; }}
+    td small {{ display:block; margin-top:3px; color:var(--muted); }}
+    .numeric {{ text-align:right; font-variant-numeric:tabular-nums; }}
+    .industry-link {{ min-height:0; padding:0; border:0; border-radius:0; background:transparent; color:var(--accent); font-weight:650; }}
+    .industry-link:hover {{ text-decoration:underline; }}
+    .quadrant-tag {{ display:inline-block; padding:4px 8px; border-radius:999px; background:var(--soft); white-space:nowrap; }}
+    .empty-row {{ color:var(--muted); text-align:center; }}
     footer {{ margin-top:17px; color:var(--muted); font-size:13px; line-height:1.65; }}
     @media (prefers-color-scheme:dark) {{ :root {{ --bg:#101722; --surface:#172130; --text:#edf3f8; --muted:#aab6c4; --border:#2d3a4a; --accent:#85baf0; --soft:#202d3e; }} .panel {{ box-shadow:none; }} }}
     @media (max-width:900px) {{ main {{ padding:18px; }} header {{ align-items:flex-start; flex-direction:column; }} .workspace {{ grid-template-columns:1fr; }} .detail {{ position:static; }} .count {{ width:100%; margin-left:0; }} }}
@@ -1521,14 +1587,14 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
 <main>
   <header>
     <div>
-      <h1>概念板块 RRG 四象限</h1>
-      <p class="subtitle">数据日期 {report_date} · 悬停查看指标，点击板块查看完整信息</p>
+      <h1>申万一级行业 RRG 四象限</h1>
+      <p class="subtitle">申万2021版一级行业 · 数据日期 {report_date} · 悬停查看指标，点击行业查看完整信息</p>
     </div>
     <div class="status">市场状态：<strong>{regime}</strong></div>
   </header>
-  <section class="toolbar" aria-label="板块筛选">
-    <label for="board-search">搜索概念板块</label>
-    <input id="board-search" type="search" placeholder="搜索板块名称或代码" autocomplete="off">
+  <section class="toolbar" aria-label="行业筛选">
+    <label for="board-search">搜索申万行业</label>
+    <input id="board-search" type="search" placeholder="搜索行业名称或代码" autocomplete="off">
     <label for="quadrant-filter">筛选象限</label>
     <select id="quadrant-filter">
       <option value="">全部象限</option>
@@ -1541,7 +1607,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     <span id="visible-count" class="count" aria-live="polite"></span>
   </section>
   <div class="workspace">
-    <section class="panel chart-panel" aria-label="概念板块四象限散点图">
+    <section class="panel chart-panel" aria-label="申万一级行业四象限散点图">
       {chart}
       <div class="legend" aria-label="象限图例">
         <span style="--dot:#16835d">领先区</span><span style="--dot:#ca8a04">改善区</span>
@@ -1549,7 +1615,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
       </div>
     </section>
     <aside id="board-detail" class="panel detail" aria-live="polite">
-      <div class="eyebrow" id="detail-quadrant">选择板块</div>
+      <div class="eyebrow" id="detail-quadrant">选择行业</div>
       <h2 id="detail-name">暂无数据</h2>
       <div id="detail-code" class="code">-</div>
       <dl>
@@ -1560,11 +1626,21 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
         <div class="metric"><dt>5日扩散变化</dt><dd id="detail-delta">-</dd></div>
         <div class="metric"><dt>成分覆盖</dt><dd id="detail-coverage">-</dd></div>
       </dl>
-      <div class="leader"><span class="meta">板块龙头</span><strong id="detail-leader">-</strong><span id="detail-confirmation" class="badge">待确认</span></div>
+      <div class="leader"><span class="meta">行业龙头</span><strong id="detail-leader">-</strong><span id="detail-confirmation" class="badge">待确认</span></div>
       <div id="detail-eligible" class="badge">未进入严格候选</div>
     </aside>
   </div>
-  <footer>点位大小代表综合得分；虚线之外的缩放可通过图表工具栏重置。扩散度使用自由流通市值加权，RRG 以全 A 加权组合为基准。页面仅供量化研究，不构成投资建议。<br><span class="meta">生成时间：{generated_at or "-"}</span></footer>
+  <section class="panel table-panel" aria-labelledby="industry-list-title">
+    <h2 id="industry-list-title">领先区 / 改善区行业清单</h2>
+    <p>按所在区域及综合得分排序；点击行业名称可同步查看上方详情。</p>
+    <div class="table-responsive">
+      <table id="industry-list">
+        <thead><tr><th>申万行业</th><th>所在区域</th><th class="numeric">得分</th><th class="numeric">扩散度</th><th class="numeric">5日变化</th><th>板块龙头</th></tr></thead>
+        <tbody>{focus_table_rows}</tbody>
+      </table>
+    </div>
+  </section>
+  <footer>点位大小代表综合得分；缩放可通过图表工具栏重置。行业口径为申万2021版一级行业，扩散度使用自由流通市值加权，RRG 以全 A 加权组合为基准。页面仅供量化研究，不构成投资建议。<br><span class="meta">生成时间：{generated_at or "-"}</span></footer>
 </main>
 <script>
   const allBoards = {embedded_data};
@@ -1606,7 +1682,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
       "marker.size": [filtered.map(item => 14 + Math.min(Math.max(value(item,"score"),0),100) * .32)],
       "marker.color": [filtered.map(item => quadrantColors[item.quadrant] || "#45627d")]
     }}, [0]);
-    count.textContent = `显示 ${{filtered.length}} / ${{allBoards.length}} 个板块`;
+    count.textContent = `显示 ${{filtered.length}} / ${{allBoards.length}} 个行业`;
     if (filtered.length) showDetail(filtered[0]);
     return filtered;
   }}
@@ -1618,7 +1694,11 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
   search.addEventListener("input", applyFilters);
   quadrant.addEventListener("change", applyFilters);
   document.getElementById("reset-filter").addEventListener("click", () => {{ search.value = ""; quadrant.value = ""; applyFilters(); search.focus(); }});
-  count.textContent = `显示 ${{allBoards.length}} / ${{allBoards.length}} 个板块`;
+  document.querySelectorAll(".industry-link").forEach(button => button.addEventListener("click", () => {{
+    showDetail(allBoards.find(item => item.code === button.dataset.code));
+    document.getElementById("board-detail").scrollIntoView({{behavior:"smooth",block:"center"}});
+  }}));
+  count.textContent = `显示 ${{allBoards.length}} / ${{allBoards.length}} 个行业`;
   if (allBoards.length) showDetail(allBoards[0]);
 </script>
 </body>
@@ -1641,7 +1721,7 @@ def build_feishu_payload(
     )
     buys = (
         "、".join(
-            f"{item['symbol']} {item['stock_name']}[{item['concept_name']}]"
+            f"{item['symbol']} {item['stock_name']}[{item['industry_name']}]"
             for item in report.get("buy_candidates", [])
         )
         or "无（风险过滤后为空）"
@@ -1660,7 +1740,7 @@ def build_feishu_payload(
                 "text": f"数据日期：{market['latest_date']}　市场：{market['regime']}",
             }
         ],
-        [{"tag": "text", "text": f"热门概念：{top}"}],
+        [{"tag": "text", "text": f"强势申万行业：{top}"}],
         [{"tag": "text", "text": f"次日条件候选：{buys}"}],
         [{"tag": "text", "text": f"观察池：{watches}"}],
         [
@@ -1680,7 +1760,7 @@ def build_feishu_payload(
         "content": {
             "post": {
                 "zh_cn": {
-                    "title": f"QuantMind 概念轮动日报 {market['latest_date']}",
+                    "title": f"QuantMind 申万行业轮动日报 {market['latest_date']}",
                     "content": content,
                 }
             }
@@ -1764,15 +1844,14 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     LOGGER.info("Loading local stock history")
     stock = load_stock_history()
-    LOGGER.info("Loading concept list and membership")
-    concepts = load_concepts(cache_dir)
-    memberships = load_memberships(
-        concepts, cache_dir, cache_days=args.member_cache_days
+    LOGGER.info("Loading SW2021 level-one industries and membership")
+    industries, memberships = load_sw_industry_universe(
+        cache_dir, cache_days=args.member_cache_days
     )
-    LOGGER.info("Analyzing %s concepts", len(concepts))
+    LOGGER.info("Analyzing %s SW industries", len(industries))
     report, boards = build_report(
         stock,
-        concepts,
+        industries,
         memberships,
         max_buy=args.max_buy,
         max_watch=args.max_watch,
@@ -1816,5 +1895,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        LOGGER.exception("Daily concept rotation report failed: %s", exc)
+        LOGGER.exception("Daily SW industry rotation report failed: %s", exc)
         raise SystemExit(1) from exc
