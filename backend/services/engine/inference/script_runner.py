@@ -469,11 +469,40 @@ class InferenceScriptRunner:
             df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
             rows = int((df["trade_date"] == trade_date).sum())
             ready = rows > 0
+            audit_detail = ""
+            metadata_path = parquet_path.with_suffix(".metadata.json")
+            if ready and metadata_path.is_file():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    incremental = metadata.get("incremental_update") or {}
+                    audits = incremental.get("audits") or []
+                    day_audit = next(
+                        (
+                            item
+                            for item in audits
+                            if isinstance(item, dict)
+                            and str(item.get("trade_date") or "") == trade_date
+                        ),
+                        None,
+                    )
+                    if day_audit is not None:
+                        ready = bool(day_audit.get("passed"))
+                        audit_detail = (
+                            f", source_coverage={day_audit.get('source_coverage')}, "
+                            f"recomputed_coverage={day_audit.get('recomputed_coverage')}, "
+                            f"model_fill_ratio={day_audit.get('model_fill_ratio')}"
+                        )
+                except Exception as exc:
+                    return {
+                        "ready": False,
+                        "detail": f"增量特征审计读取失败: {metadata_path}: {exc}",
+                    }
             return {
                 "ready": ready,
                 "detail": (
                     f"parquet={parquet_path.name}, date={trade_date}, rows={rows}"
-                    + ("" if ready else " (该日期无数据)")
+                    + audit_detail
+                    + ("" if ready else " (该日期无数据或质量门禁未通过)")
                 ),
             }
         except Exception as exc:

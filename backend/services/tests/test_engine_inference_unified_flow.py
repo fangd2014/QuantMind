@@ -1,11 +1,52 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import types
 
+import pandas as pd
 import pytest
 
 from backend.services.engine.inference.script_runner import ExecutionResult, InferenceScriptRunner
+
+
+def test_parquet_readiness_honors_incremental_quality_audit(tmp_path: Path):
+    model_dir = tmp_path / "model_qlib"
+    data_dir = tmp_path / "features"
+    model_dir.mkdir()
+    data_dir.mkdir()
+    (model_dir / "metadata.json").write_text(
+        json.dumps({"data_source": "parquet", "data_dir": str(data_dir)}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [{"trade_date": "2026-07-30", "symbol": "SH600000", "f1": 1.0}]
+    ).to_parquet(data_dir / "model_features_2026.parquet", index=False)
+    (data_dir / "model_features_2026.metadata.json").write_text(
+        json.dumps(
+            {
+                "incremental_update": {
+                    "audits": [
+                        {
+                            "trade_date": "2026-07-30",
+                            "passed": False,
+                            "source_coverage": 0.5,
+                            "recomputed_coverage": 0.2,
+                            "model_fill_ratio": 0.5,
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = InferenceScriptRunner(
+        primary_model_dir=str(model_dir), primary_data_dir=str(data_dir)
+    )
+    readiness = runner._query_parquet_readiness("2026-07-30")
+    assert readiness["ready"] is False
+    assert "质量门禁未通过" in readiness["detail"]
 
 
 def test_runner_dimension_insufficient_returns_failure(monkeypatch, tmp_path: Path):
