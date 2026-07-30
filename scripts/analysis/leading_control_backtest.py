@@ -583,6 +583,24 @@ def _sensitivity_metrics(
     return result
 
 
+def enrich_report_stock_names(
+    report: dict[str, Any], memberships: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Fill snapshot-era symbol placeholders from PIT membership metadata."""
+    names: dict[str, str] = {}
+    for rows in memberships.values():
+        for row in rows:
+            symbol = normalize_symbol(row.get("symbol") or row.get("ts_code"))
+            name = str(row.get("name") or "").strip()
+            if symbol and name and name != symbol:
+                names[symbol] = name
+    for row in report.get("holdings") or []:
+        symbol = normalize_symbol(row.get("symbol"))
+        current = str(row.get("stock_name") or "").strip()
+        if symbol and (not current or normalize_symbol(current) == symbol):
+            row["stock_name"] = names.get(symbol, current or symbol)
+
+
 def run_monthly_backtest(
     stock: pd.DataFrame,
     industries: list[dict[str, Any]],
@@ -782,8 +800,11 @@ def run_monthly_backtest(
             "strategy": "申万领先区 + 控盘量价代理 + 洗盘/开始拉升",
         },
         "parameters": {
-            "start_signal_date": pd.Timestamp(start_date).date().isoformat(),
-            "end_date": pd.Timestamp(end_date).date().isoformat(),
+            "requested_start_date": pd.Timestamp(start_date).date().isoformat(),
+            "start_signal_date": (
+                monthly_rows[0]["signal_date"] if monthly_rows else None
+            ),
+            "end_date": monthly_rows[-1]["sell_date"] if monthly_rows else None,
             "frequency": "monthly",
             "signal_timing": "月末最后交易日收盘后",
             "entry_timing": "次月首个交易日开盘",
@@ -1297,6 +1318,13 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     )
     payload = escape(json.dumps(report, ensure_ascii=False, allow_nan=False))
     title = escape(str(report.get("meta", {}).get("title") or "量化回测报告"))
+    parameters = report.get("parameters") or {}
+    period_summary = escape(
+        f"信号起点 {parameters.get('start_signal_date', '-')} · "
+        f"结束 {parameters.get('end_date', '-')} · "
+        f"{metrics.get('months', 0)} 个完整月 · "
+        f"基准 {parameters.get('benchmark', '-')}"
+    )
     html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <style>
@@ -1305,7 +1333,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
 main{{max-width:1180px;margin:24px auto;padding:0 18px}}header,.panel{{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:16px;box-shadow:0 7px 22px #1b2c3d0b}}
 h1{{margin:0 0 5px;font-size:28px}}h2{{margin:0 0 14px;font-size:18px}}.sub{{color:var(--muted)}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin-top:18px}}.card{{background:#f7faf9;border-radius:10px;padding:13px}}.card b{{display:block;font-size:21px;color:var(--green)}}
 table{{width:100%;border-collapse:collapse}}th,td{{padding:8px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}th{{background:#f3f6f8;position:sticky;top:0}}.scroll{{overflow:auto;max-height:540px}}svg{{width:100%;height:auto}}ul{{padding-left:20px}}code{{white-space:pre-wrap}}@media(max-width:640px){{h1{{font-size:22px}}}}
-</style></head><body><main><header><h1>{title}</h1><div class="sub">{escape(str(report.get("meta", {}).get("strategy", "")))} · 生成 {escape(str(report.get("meta", {}).get("generated_at", "-")))}</div>
+</style></head><body><main><header><h1>{title}</h1><div class="sub">{escape(str(report.get("meta", {}).get("strategy", "")))} · 生成 {escape(str(report.get("meta", {}).get("generated_at", "-")))}</div><div class="sub">{period_summary}</div>
 <div class="cards"><div class="card">累计收益<b>{_percent(metrics.get("total_return"))}</b></div><div class="card">年化收益<b>{_percent(metrics.get("annualized_return"))}</b></div><div class="card">最大回撤（月频）<b>{_percent(metrics.get("max_drawdown"))}</b></div><div class="card">夏普比率<b>{_number(metrics.get("sharpe_ratio"))}</b></div><div class="card">Sortino<b>{_number(metrics.get("sortino_ratio"))}</b></div><div class="card">胜率<b>{_percent(metrics.get("win_rate"))}</b></div><div class="card">现金月占比<b>{_percent(metrics.get("cash_month_ratio"))}</b></div><div class="card">月均换手<b>{_percent(metrics.get("average_monthly_turnover"))}</b></div></div></header>
 <section class="panel"><h2>权益与基准</h2>{_svg_chart(report)}</section>
 <section class="panel"><h2>年度汇总</h2><table><thead><tr><th>年度</th><th>策略</th><th>基准</th><th>投资月份/月份</th></tr></thead><tbody>{annual_rows}</tbody></table></section>
@@ -1405,9 +1433,24 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         author="QuantMind",
     )
     metrics = report.get("metrics", {})
+    parameters = report.get("parameters", {})
+    quality = report.get("data_quality", {})
     story: list[Any] = [
         p(report.get("meta", {}).get("title", "量化回测报告"), title_style),
         p(f"策略：{report.get('meta', {}).get('strategy', '-')}"),
+        p(
+            "区间："
+            f"{parameters.get('start_signal_date', '-')} 至 "
+            f"{parameters.get('end_date', '-')}；"
+            f"完整月份 {metrics.get('months', 0)}；"
+            f"基准 {parameters.get('benchmark', '-')}"
+        ),
+        p(
+            f"数据质量：{quality.get('status', '-')}；"
+            f"{quality.get('input_rows', 0):,} 行；"
+            f"{quality.get('symbols', 0):,} 个标的；"
+            f"信号错误 {len(report.get('signal_errors') or [])}"
+        ),
         Spacer(1, 5 * mm),
         p("核心指标", heading),
         table(
@@ -1638,6 +1681,7 @@ def main() -> int:
         data_quality=quality,
         benchmark=benchmark,
     )
+    enrich_report_stock_names(report, memberships)
     actual_months = int(report["metrics"]["months"] or 0)
     if args.expected_months > 0 and actual_months != args.expected_months:
         raise RuntimeError(

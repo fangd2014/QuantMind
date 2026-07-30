@@ -10,6 +10,7 @@ import pytest
 from scripts.analysis.leading_control_backtest import (
     _build_periods,
     calculate_performance_metrics,
+    enrich_report_stock_names,
     load_database_tail,
     point_in_time_memberships,
     run_monthly_backtest,
@@ -361,6 +362,26 @@ def test_database_tail_normalizes_postgres_dates_before_snapshot_merge() -> None
 
     assert tail.loc[0, "trade_date"] == pd.Timestamp("2026-07-01")
     assert tail.loc[0, "adj_open"] == pytest.approx(12.0)
+
+
+def test_report_names_are_enriched_from_historical_memberships() -> None:
+    report = {
+        "holdings": [
+            {"symbol": "SH600001", "stock_name": "SH600001"},
+            {"symbol": "SZ000002", "stock_name": "已有人名"},
+        ]
+    }
+    memberships = {
+        "801010.SI": [
+            {"symbol": "600001.SH", "name": "浦发样本"},
+            {"symbol": "000002.SZ", "name": "万科样本"},
+        ]
+    }
+
+    enrich_report_stock_names(report, memberships)
+
+    assert report["holdings"][0]["stock_name"] == "浦发样本"
+    assert report["holdings"][1]["stock_name"] == "已有人名"
 
 
 def test_write_outputs_creates_complete_self_contained_artifacts(
