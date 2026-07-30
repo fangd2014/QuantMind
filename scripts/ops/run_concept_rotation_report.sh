@@ -55,6 +55,12 @@ export TUSHARE_TOKEN
 export CONCEPT_REPORT_PUBLIC_BASE_URL="${CONCEPT_REPORT_PUBLIC_BASE_URL:-${PUBLIC_BASE_FROM_ENV:-http://192.168.5.10:18000}}"
 DOCKER_BIN="$(command -v docker)"
 
+"${DOCKER_BIN}" exec \
+    -e WEB_HOOK \
+    "${CONTAINER}" \
+    python /app/scripts/data/maintenance/concept_rotation_preflight.py \
+    --send-feishu-alerts
+
 exec "${DOCKER_BIN}" exec \
     -e WEB_HOOK \
     -e TUSHARE_TOKEN \

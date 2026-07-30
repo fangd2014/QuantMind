@@ -9,6 +9,7 @@ from scripts.analysis.concept_rotation_report import (
     build_leading_control_picks,
     build_stock_recommendations,
     classify_quadrant,
+    load_preflight_status,
     load_sw_industry_universe,
     normalize_symbol,
     prepare_stock_history,
@@ -121,6 +122,22 @@ def test_normalize_symbol_uses_quantmind_prefix_format() -> None:
     assert normalize_symbol("sz000001") == "SZ000001"
     assert normalize_symbol("430047") == "BJ430047"
     assert normalize_symbol("not-a-stock") is None
+
+
+def test_load_preflight_status_requires_matching_passed_date(
+    tmp_path: Path, monkeypatch
+) -> None:
+    status_path = tmp_path / "preflight.json"
+    status_path.write_text(
+        '{"passed":true,"final_audit":{"latest_date":"2026-07-29"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONCEPT_REPORT_PREFLIGHT_STATUS_FILE", str(status_path))
+
+    status = load_preflight_status("2026-07-29")
+
+    assert status is not None
+    assert status["passed"] is True
 
 
 def test_classify_quadrant() -> None:

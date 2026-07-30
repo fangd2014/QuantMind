@@ -75,6 +75,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-database", action="store_true")
     parser.add_argument("--skip-qlib", action="store_true")
     parser.add_argument(
+        "--refresh-days",
+        type=int,
+        default=0,
+        help=(
+            "Re-fetch and idempotently upsert this many recent calendar days; "
+            "used by the report preflight to repair incomplete or invalid rows"
+        ),
+    )
+    parser.add_argument(
         "--minimum-success-ratio",
         type=float,
         default=0.90,
@@ -182,6 +191,26 @@ def resolve_missing_dates(
         return []
     candidates = _query_trade_dates(bs, start, target_date)
     return [candidate for candidate in candidates if _benchmark_has_data(bs, candidate)]
+
+
+def resolve_requested_dates(
+    bs: Any,
+    existing_calendar: list[str],
+    target_date: str,
+    refresh_days: int = 0,
+) -> list[str]:
+    """Resolve new dates plus an optional bounded repair window."""
+    missing_dates = resolve_missing_dates(bs, existing_calendar, target_date)
+    requested = set(missing_dates)
+    if refresh_days > 0:
+        refresh_start = (
+            date.fromisoformat(target_date) - timedelta(days=refresh_days - 1)
+        ).isoformat()
+        refresh_start = max(refresh_start, existing_calendar[0])
+        for candidate in _query_trade_dates(bs, refresh_start, target_date):
+            if candidate <= existing_calendar[-1] or _benchmark_has_data(bs, candidate):
+                requested.add(candidate)
+    return sorted(requested)
 
 
 def fetch_symbol_rows(
@@ -442,9 +471,9 @@ def upsert_database(
         column for column in columns if column not in {"trade_date", "symbol"}
     ]
     sql = f"""
-        INSERT INTO stock_daily_latest ({', '.join(columns)}) VALUES %s
+        INSERT INTO stock_daily_latest ({", ".join(columns)}) VALUES %s
         ON CONFLICT (trade_date, symbol) DO UPDATE SET
-        {', '.join(f'{column}=EXCLUDED.{column}' for column in update_columns)}
+        {", ".join(f"{column}=EXCLUDED.{column}" for column in update_columns)}
     """
     connection = _database_connection()
     try:
@@ -470,6 +499,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("--max-symbols is only allowed for dry-run validation")
     if not 0 < args.minimum_success_ratio <= 1:
         raise ValueError("--minimum-success-ratio must be in (0, 1]")
+    if args.refresh_days < 0:
+        raise ValueError("--refresh-days must be non-negative")
 
     qlib_dir = Path(args.qlib_dir).expanduser().resolve()
     calendar_path = qlib_dir / "calendars" / "day.txt"
@@ -490,8 +521,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"Baostock login failed: {login.error_code} {login.error_msg}"
         )
     try:
-        missing_dates = resolve_missing_dates(bs, existing_calendar, args.target_date)
-        if not missing_dates:
+        requested_dates = resolve_requested_dates(
+            bs,
+            existing_calendar,
+            args.target_date,
+            refresh_days=args.refresh_days,
+        )
+        if not requested_dates:
             return {
                 "success": True,
                 "source": "baostock",
@@ -505,8 +541,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for index, symbol in enumerate(instruments, start=1):
             try:
                 rows = fetch_symbol_rows(
-                    bs, symbol, missing_dates[0], missing_dates[-1]
+                    bs, symbol, requested_dates[0], requested_dates[-1]
                 )
+                rows = {
+                    trade_date: row
+                    for trade_date, row in rows.items()
+                    if trade_date in requested_dates
+                }
                 if rows:
                     rows_by_symbol[symbol] = rows
                 else:
@@ -541,7 +582,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             qlib_result = update_qlib(
                 qlib_dir,
                 existing_calendar,
-                missing_dates,
+                requested_dates,
                 rows_by_symbol,
                 factors_by_symbol,
                 args.apply,
@@ -552,9 +593,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "success": True,
             "source": "baostock",
             "apply": bool(args.apply),
-            "date_start": missing_dates[0],
-            "date_end": missing_dates[-1],
-            "trading_days": len(missing_dates),
+            "date_start": requested_dates[0],
+            "date_end": requested_dates[-1],
+            "trading_days": len(requested_dates),
+            "refresh_days": args.refresh_days,
             "instruments_total": len(instruments),
             "instruments_ok": len(rows_by_symbol),
             "instruments_failed": len(failures),
