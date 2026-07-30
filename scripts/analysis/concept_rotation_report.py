@@ -40,6 +40,7 @@ SW_INDUSTRY_VERSION = "SW2021"
 DEFAULT_OUTPUT_DIR = "/data/uploads/reports/concept-rotation"
 DEFAULT_CACHE_DIR = "/data/cache/concept-rotation"
 DEFAULT_PUBLIC_BASE_URL = "http://192.168.5.10:18000"
+DEFAULT_PREFLIGHT_STATUS_FILE = "/data/cache/concept-rotation/preflight.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -1373,6 +1374,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         canvas.restoreState()
 
     market = report["market"]
+    preflight = report.get("data_preflight") or {}
     temp_target = target.with_suffix(".tmp.pdf")
     document = SimpleDocTemplate(
         str(temp_target),
@@ -1408,6 +1410,16 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         [
             table(market_data, [34 * mm] * 5),
             Spacer(1, 7),
+            Paragraph(
+                (
+                    "数据门禁：自动修复后复检通过。"
+                    if preflight.get("repaired")
+                    else "数据门禁：更新与质量检查通过。"
+                )
+                if preflight
+                else "数据门禁状态：未随本次报告提供。",
+                small_style,
+            ),
             Paragraph(
                 f"{market.get('freshness_note', '')}。市场退潮、过热或数据滞后时，"
                 "系统会自动取消条件买入列表并降级到观察池；"
@@ -2020,6 +2032,16 @@ def build_feishu_payload(
     report: dict[str, Any], pdf_url: str, html_url: str
 ) -> dict[str, Any]:
     market = report["market"]
+    preflight = report.get("data_preflight") or {}
+    preflight_audit = preflight.get("final_audit") or {}
+    preflight_warnings = preflight_audit.get("warnings") or []
+    preflight_text = (
+        "数据门禁：自动修复后复检通过"
+        if preflight.get("repaired")
+        else "数据门禁：更新与质量检查通过"
+    )
+    if preflight_warnings:
+        preflight_text += f"；提醒：{'；'.join(preflight_warnings[:3])}"
     top = (
         "、".join(
             f"{item['name']}({item['quadrant']})" for item in report.get("top", [])[:5]
@@ -2076,6 +2098,7 @@ def build_feishu_payload(
                 "text": f"数据日期：{market['latest_date']}　市场：{market['regime']}",
             }
         ],
+        *([[{"tag": "text", "text": preflight_text}]] if preflight else []),
         [{"tag": "text", "text": f"强势申万行业：{top}"}],
         *control_content,
         [{"tag": "text", "text": f"次日条件候选：{buys}"}],
@@ -2171,6 +2194,25 @@ def write_outputs(
     return pdf_path, latest_pdf_path, html_path, latest_html_path
 
 
+def load_preflight_status(report_date: str) -> dict[str, Any] | None:
+    path = Path(
+        os.getenv("CONCEPT_REPORT_PREFLIGHT_STATUS_FILE", DEFAULT_PREFLIGHT_STATUS_FILE)
+    )
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        LOGGER.exception("Ignoring unreadable data preflight status: %s", path)
+        return None
+    audit = payload.get("final_audit") or {}
+    if not payload.get("passed") or str(audit.get("latest_date")) != report_date:
+        raise RuntimeError(
+            "Data preflight status is missing, failed, or does not match report date"
+        )
+    return payload
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(
@@ -2193,6 +2235,9 @@ def main() -> int:
         max_buy=args.max_buy,
         max_watch=args.max_watch,
         max_control_picks=args.max_control_picks,
+    )
+    report["data_preflight"] = load_preflight_status(
+        str(report["market"]["latest_date"])
     )
     pdf_path, _latest_pdf_path, html_path, _latest_html_path = write_outputs(
         report, boards, output_dir

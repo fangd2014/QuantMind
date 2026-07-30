@@ -11,6 +11,7 @@ from scripts.data.maintenance.sync_daily_from_baostock import (
     extend_bin_file,
     normalize_symbol,
     qlib_value,
+    resolve_requested_dates,
 )
 
 
@@ -66,6 +67,44 @@ class SyncDailyFromBaostockTests(unittest.TestCase):
                 actual,
                 np.array([1.0, 8.0, 9.0, 10.5], dtype="<f4"),
             )
+
+    def test_resolve_requested_dates_can_refresh_existing_database_window(
+        self,
+    ) -> None:
+        class Result:
+            error_code = "0"
+            error_msg = ""
+
+            def __init__(self) -> None:
+                self.rows = iter(
+                    [
+                        ["2026-07-27", "0"],
+                        ["2026-07-28", "1"],
+                        ["2026-07-29", "1"],
+                    ]
+                )
+                self.current = None
+
+            def next(self) -> bool:
+                self.current = next(self.rows, None)
+                return self.current is not None
+
+            def get_row_data(self):
+                return self.current
+
+        class Baostock:
+            @staticmethod
+            def query_trade_dates(**_kwargs):
+                return Result()
+
+        dates = resolve_requested_dates(
+            Baostock(),
+            ["2026-07-28", "2026-07-29"],
+            "2026-07-29",
+            refresh_days=3,
+        )
+
+        self.assertEqual(dates, ["2026-07-28", "2026-07-29"])
 
 
 if __name__ == "__main__":
