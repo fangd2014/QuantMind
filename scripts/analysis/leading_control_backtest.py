@@ -1196,6 +1196,14 @@ def _percent(value: Any) -> str:
     return f"{number:+.2%}"
 
 
+def _number(value: Any, digits: int = 2) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{number:.{digits}f}" if math.isfinite(number) else "-"
+
+
 def _svg_chart(report: dict[str, Any]) -> str:
     curve = report.get("equity_curve") or []
     if not curve:
@@ -1280,7 +1288,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
         f"<td>{_percent(row.get('total_return'))}</td>"
         f"<td>{_percent(row.get('annualized_return'))}</td>"
         f"<td>{_percent(row.get('max_drawdown'))}</td>"
-        f"<td>{row.get('sharpe_ratio') if row.get('sharpe_ratio') is not None else '-'}</td>"
+        f"<td>{_number(row.get('sharpe_ratio'))}</td>"
         "</tr>"
         for row in report.get("sensitivity", [])
     )
@@ -1298,7 +1306,7 @@ main{{max-width:1180px;margin:24px auto;padding:0 18px}}header,.panel{{backgroun
 h1{{margin:0 0 5px;font-size:28px}}h2{{margin:0 0 14px;font-size:18px}}.sub{{color:var(--muted)}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin-top:18px}}.card{{background:#f7faf9;border-radius:10px;padding:13px}}.card b{{display:block;font-size:21px;color:var(--green)}}
 table{{width:100%;border-collapse:collapse}}th,td{{padding:8px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}th{{background:#f3f6f8;position:sticky;top:0}}.scroll{{overflow:auto;max-height:540px}}svg{{width:100%;height:auto}}ul{{padding-left:20px}}code{{white-space:pre-wrap}}@media(max-width:640px){{h1{{font-size:22px}}}}
 </style></head><body><main><header><h1>{title}</h1><div class="sub">{escape(str(report.get("meta", {}).get("strategy", "")))} · 生成 {escape(str(report.get("meta", {}).get("generated_at", "-")))}</div>
-<div class="cards"><div class="card">累计收益<b>{_percent(metrics.get("total_return"))}</b></div><div class="card">年化收益<b>{_percent(metrics.get("annualized_return"))}</b></div><div class="card">最大回撤（月频）<b>{_percent(metrics.get("max_drawdown"))}</b></div><div class="card">夏普比率<b>{metrics.get("sharpe_ratio") if metrics.get("sharpe_ratio") is not None else "-"}</b></div><div class="card">Sortino<b>{metrics.get("sortino_ratio") if metrics.get("sortino_ratio") is not None else "-"}</b></div><div class="card">胜率<b>{_percent(metrics.get("win_rate"))}</b></div><div class="card">现金月占比<b>{_percent(metrics.get("cash_month_ratio"))}</b></div><div class="card">月均换手<b>{_percent(metrics.get("average_monthly_turnover"))}</b></div></div></header>
+<div class="cards"><div class="card">累计收益<b>{_percent(metrics.get("total_return"))}</b></div><div class="card">年化收益<b>{_percent(metrics.get("annualized_return"))}</b></div><div class="card">最大回撤（月频）<b>{_percent(metrics.get("max_drawdown"))}</b></div><div class="card">夏普比率<b>{_number(metrics.get("sharpe_ratio"))}</b></div><div class="card">Sortino<b>{_number(metrics.get("sortino_ratio"))}</b></div><div class="card">胜率<b>{_percent(metrics.get("win_rate"))}</b></div><div class="card">现金月占比<b>{_percent(metrics.get("cash_month_ratio"))}</b></div><div class="card">月均换手<b>{_percent(metrics.get("average_monthly_turnover"))}</b></div></div></header>
 <section class="panel"><h2>权益与基准</h2>{_svg_chart(report)}</section>
 <section class="panel"><h2>年度汇总</h2><table><thead><tr><th>年度</th><th>策略</th><th>基准</th><th>投资月份/月份</th></tr></thead><tbody>{annual_rows}</tbody></table></section>
 <section class="panel"><h2>逐月表现</h2><div class="scroll"><table><thead><tr><th>月份</th><th>市场状态</th><th>持仓数</th><th>策略</th><th>基准</th></tr></thead><tbody>{monthly_rows}</tbody></table></div></section>
@@ -1319,7 +1327,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import (
         PageBreak,
         Paragraph,
@@ -1329,11 +1337,19 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         TableStyle,
     )
 
+    font = "QuantMindCN"
+    font_candidates = [
+        Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/STHeiti Light.ttc"),
+    ]
+    font_path = next((path for path in font_candidates if path.exists()), None)
+    if font_path is None:
+        raise RuntimeError("No embeddable Chinese TTF/TTC font is available for PDF")
     try:
-        pdfmetrics.getFont("STSong-Light")
+        pdfmetrics.getFont(font)
     except KeyError:
-        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
-    font = "STSong-Light"
+        pdfmetrics.registerFont(TTFont(font, str(font_path), subfontIndex=0))
     styles = getSampleStyleSheet()
     body = ParagraphStyle(
         "body-cn", parent=styles["BodyText"], fontName=font, fontSize=8.5, leading=13
@@ -1385,6 +1401,8 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         leftMargin=14 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
+        title=str(report.get("meta", {}).get("title") or "量化回测报告"),
+        author="QuantMind",
     )
     metrics = report.get("metrics", {})
     story: list[Any] = [
@@ -1400,7 +1418,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
                     _percent(metrics.get("annualized_return")),
                     _percent(metrics.get("annualized_volatility")),
                     _percent(metrics.get("max_drawdown")),
-                    metrics.get("sharpe_ratio", "-"),
+                    _number(metrics.get("sharpe_ratio")),
                     _percent(metrics.get("win_rate")),
                 ],
             ],
@@ -1490,7 +1508,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             _percent(row.get("total_return")),
             _percent(row.get("annualized_return")),
             _percent(row.get("max_drawdown")),
-            row.get("sharpe_ratio"),
+            _number(row.get("sharpe_ratio")),
         ]
         for row in report.get("sensitivity", [])
     ]
