@@ -1137,6 +1137,7 @@ def load_database_tail(
         connection.close()
     tail = pd.DataFrame(rows, columns=columns)
     if not tail.empty:
+        tail["trade_date"] = pd.to_datetime(tail["trade_date"], errors="coerce")
         factor = pd.to_numeric(tail["factor"], errors="coerce")
         invalid_factor = ~np.isfinite(factor) | (factor <= 0)
         if invalid_factor.any():
