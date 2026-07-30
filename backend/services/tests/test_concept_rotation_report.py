@@ -45,6 +45,10 @@ def _control_candidate(
         "pct_return": pct_return,
         "amount": amount_ratio * 1_000_000,
         "amount_ma5_calc": 1_000_000,
+        "amount_max20_calc": 1_600_000 if stage == "开始拉升" else 2_500_000,
+        "ema12_calc": 10.7 if stage == "开始拉升" else 10.25,
+        "ema36_calc": 9.9,
+        "obv_balance5": 0.24 if stage == "开始拉升" else 0.08,
         "turnover_rate": 5.0,
         "limit_up_today": 0,
         "limit_down_today": 0,
@@ -367,7 +371,44 @@ def test_leading_control_picks_only_include_controlled_wash_or_breakout() -> Non
         assert item["industry_name"] in item["reason"]
         assert "上涨/下跌成交额比" in item["reason"]
         assert item["stage"] in item["reason"]
+        assert item["main_force_intent"] in {"洗盘吸筹", "主动拉升"}
+        assert item["intent_confidence"] in {"中", "高"}
+        assert "OBV方向代理" in item["intent_evidence"]
         assert "MA20" in item["invalidation"]
+
+
+def test_leading_control_picks_exclude_distribution_risk() -> None:
+    boards = pd.DataFrame(
+        [
+            {
+                "code": "801080.SI",
+                "name": "电子",
+                "score": 91.0,
+                "quadrant": "领先区",
+                "rs_ratio": 108.0,
+            }
+        ]
+    )
+    candidate = _control_candidate(
+        "SH600001", stage="开始拉升", stock_name="放量滞涨样本"
+    )
+    candidate.update(
+        {
+            "amount": 2_000_000,
+            "amount_ma5_calc": 1_000_000,
+            "pct_return": 0.01,
+            "obv_balance5": -0.25,
+            "range_pos20": 0.88,
+        }
+    )
+
+    picks = build_leading_control_picks(
+        boards,
+        pd.DataFrame([candidate]),
+        {"801080.SI": {"SH600001"}},
+    )
+
+    assert picks == []
 
 
 def test_leading_control_picks_are_capped_at_ten_and_two_per_industry() -> None:
@@ -426,6 +467,9 @@ def test_feishu_payload_contains_report_links_and_candidates() -> None:
                 "stock_name": "启动股份",
                 "industry_name": "电子",
                 "stage": "开始拉升",
+                "main_force_intent": "主动拉升",
+                "intent_confidence": "高",
+                "intent_evidence": "量比1.35、5日OBV方向代理+0.24",
                 "reason": "电子位于领先区；控盘量价代理成立；开始拉升。",
                 "invalidation": "跌破MA20时失效",
                 "action_label": "次日关注",
@@ -444,6 +488,8 @@ def test_feishu_payload_contains_report_links_and_candidates() -> None:
     assert "SH600001" in serialized
     assert "SZ000002" in serialized
     assert "开始拉升" in serialized
+    assert "主力意图：主动拉升（高置信）" in serialized
+    assert "意图依据" in serialized
     assert "控盘量价代理" in serialized
     assert "http://example/report.pdf" in serialized
     assert "http://example/report.html" in serialized
