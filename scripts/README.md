@@ -31,6 +31,7 @@ Unified scripts directory for the QuantMind project, organized by functionality.
 - `scripts/ops/run_concept_rotation_report.sh`: 从服务器 `.env` 安全读取 `WEB_HOOK`、从 `/root/.bashrc` 读取 `TUSHARE_TOKEN`，在 `quantmind` 容器内生成日报并推送飞书摘要、交互四象限和 PDF 下载链接。
 - `scripts/data/maintenance/concept_rotation_preflight.py`: 每次轮动日报前先执行 Baostock 增量更新，并校验应有交易日、截面完整度、最近 26 日、代码/OHLC/成交量与极端涨跌；发现阻断异常时对最近 35 个日历日做同源幂等回刷并复检，仍失败则阻断推荐并发送飞书告警。不会自动删行、猜测复权因子或用前值填充价格。
 - `scripts/analysis/leading_control_backtest.py`: 对“申万领先区 + 控盘量价代理 + 洗盘/开始拉升”执行最近 60 个完整自然月的点时回测。月末收盘出信号，次月首开买入、再下一月首开调仓；信号使用原始 OHLC，收益使用复权价格，历史申万成分按 `[in_date, out_date)` 过滤，沪深300为基准。正式运行若不是连续 60 月、任一月信号失败或缺年度快照会拒绝生成报告；输出 JSON、CSV、独立 HTML 和中文 PDF。
+- `scripts/ops/run_leading_control_backtest.sh`: 在服务器读取 `/root/.bashrc` 中既有的 `TUSHARE_TOKEN`，通过 `quantmind` 容器运行上述回测，并将报告写入 Nginx 已暴露的 `/data/uploads/reports/leading-control-backtest`。
 - `scripts/ops/install_concept_rotation_cron.sh`: 幂等安装每天 20:00 的申万行业轮动日报宿主机 cron 任务。
 - `scripts/data/processing/sync_margin_instruments.py`: 将 [融资融券.xlsx](/Users/qusong/git/quantmind/data/融资融券.xlsx) 同步为 `db/qlib_data/instruments/margin.txt`，供回测直接复用固定两融股票池。
 - `scripts/data/processing/generate_rolling_pred_online.py`: Generate rolling predictions for online use.
