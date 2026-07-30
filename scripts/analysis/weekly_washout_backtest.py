@@ -244,7 +244,15 @@ def prepare_weekly_observations(
 
     observations: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    for signal_date, buy_date, sell_date, holding_week in periods:
+    for period_index, (signal_date, buy_date, sell_date, holding_week) in enumerate(
+        periods, start=1
+    ):
+        LOGGER.info(
+            "Evaluating weekly signal %d/%d at %s",
+            period_index,
+            len(periods),
+            signal_date.date(),
+        )
         history = frame[
             (
                 frame["trade_date"]
