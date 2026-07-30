@@ -6,6 +6,7 @@ import pandas as pd
 
 from scripts.analysis.concept_rotation_report import (
     build_feishu_payload,
+    build_leading_control_picks,
     build_stock_recommendations,
     classify_quadrant,
     load_sw_industry_universe,
@@ -15,6 +16,46 @@ from scripts.analysis.concept_rotation_report import (
     render_report_pdf,
     write_outputs,
 )
+
+
+def _control_candidate(
+    symbol: str,
+    *,
+    stage: str = "洗盘",
+    stock_name: str | None = None,
+) -> dict[str, object]:
+    if stage == "开始拉升":
+        close, high20, ret5, amount_ratio, close_pos = 11.0, 11.2, 0.06, 1.35, 0.82
+        pct_return = 0.035
+    else:
+        close, high20, ret5, amount_ratio, close_pos = 10.2, 11.0, -0.02, 0.78, 0.62
+        pct_return = -0.005
+    return {
+        "symbol": symbol,
+        "stock_name": stock_name or f"样本{symbol[-2:]}",
+        "is_st": 0,
+        "close": close,
+        "low": close - 0.3,
+        "high": close + 0.2,
+        "ma5_calc": 10.5 if stage == "开始拉升" else 10.1,
+        "ma20_calc": 10.0,
+        "ret5_calc": ret5,
+        "ret20_calc": 0.16,
+        "pct_return": pct_return,
+        "amount": amount_ratio * 1_000_000,
+        "amount_ma5_calc": 1_000_000,
+        "turnover_rate": 5.0,
+        "limit_up_today": 0,
+        "limit_down_today": 0,
+        "high20_calc": high20,
+        "low20_calc": 8.8,
+        "up_down_amount_ratio20": 1.32,
+        "trend_efficiency20": 0.28,
+        "volatility20": 0.025,
+        "range_pos20": (close - 8.8) / (high20 - 8.8),
+        "drawdown20": close / high20 - 1,
+        "close_pos": close_pos,
+    }
 
 
 def test_load_sw_industry_universe_uses_sw2021_l1_and_cache(
@@ -258,6 +299,99 @@ def test_stock_recommendations_honor_empty_strict_eligibility() -> None:
     assert watch == []
 
 
+def test_leading_control_picks_only_include_controlled_wash_or_breakout() -> None:
+    boards = pd.DataFrame(
+        [
+            {
+                "code": "801080.SI",
+                "name": "电子",
+                "score": 91.0,
+                "quadrant": "领先区",
+                "rs_ratio": 108.0,
+            },
+            {
+                "code": "801890.SI",
+                "name": "机械设备",
+                "score": 86.0,
+                "quadrant": "改善区",
+                "rs_ratio": 98.0,
+            },
+        ]
+    )
+    wash = _control_candidate("SH600001", stock_name="洗盘科技")
+    breakout = _control_candidate("SZ000002", stage="开始拉升", stock_name="启动股份")
+    improving = _control_candidate("SZ000003", stock_name="改善样本")
+    broken_ma20 = _control_candidate("SH600004", stock_name="破位样本")
+    broken_ma20["close"] = 9.8
+    st_stock = _control_candidate("SH600005", stock_name="ST风险")
+    st_stock["is_st"] = 1
+    limit_stock = _control_candidate("SH600006", stock_name="涨停样本")
+    limit_stock["limit_up_today"] = 1
+
+    picks = build_leading_control_picks(
+        boards,
+        pd.DataFrame([wash, breakout, improving, broken_ma20, st_stock, limit_stock]),
+        {
+            "801080.SI": {
+                "SH600001",
+                "SZ000002",
+                "SH600004",
+                "SH600005",
+                "SH600006",
+            },
+            "801890.SI": {"SZ000003"},
+        },
+    )
+
+    assert {item["symbol"] for item in picks} == {"SH600001", "SZ000002"}
+    assert {item["stage"] for item in picks} == {"洗盘", "开始拉升"}
+    assert all(item["quadrant"] == "领先区" for item in picks)
+    for item in picks:
+        assert item["industry_name"] in item["reason"]
+        assert "上涨/下跌成交额比" in item["reason"]
+        assert item["stage"] in item["reason"]
+        assert "MA20" in item["invalidation"]
+
+
+def test_leading_control_picks_are_capped_at_ten_and_two_per_industry() -> None:
+    board_rows = []
+    memberships: dict[str, set[str]] = {}
+    stock_rows = []
+    for industry_index in range(6):
+        code = f"801{industry_index:03d}.SI"
+        board_rows.append(
+            {
+                "code": code,
+                "name": f"领先行业{industry_index}",
+                "score": 90.0 - industry_index,
+                "quadrant": "领先区",
+                "rs_ratio": 105.0 - industry_index / 10,
+            }
+        )
+        symbols = set()
+        for stock_index in range(3):
+            symbol = f"SH60{industry_index:02d}{stock_index:02d}"
+            symbols.add(symbol)
+            stock_rows.append(
+                _control_candidate(
+                    symbol,
+                    stage="开始拉升" if stock_index % 2 else "洗盘",
+                )
+            )
+        memberships[code] = symbols
+
+    picks = build_leading_control_picks(
+        pd.DataFrame(board_rows),
+        pd.DataFrame(stock_rows),
+        memberships,
+        limit=99,
+    )
+
+    assert len(picks) == 10
+    counts = pd.Series([item["industry_code"] for item in picks]).value_counts()
+    assert counts.max() <= 2
+
+
 def test_feishu_payload_contains_report_links_and_candidates() -> None:
     report = {
         "market": {"latest_date": "2026-07-24", "regime": "活跃"},
@@ -267,6 +401,17 @@ def test_feishu_payload_contains_report_links_and_candidates() -> None:
                 "symbol": "SH600001",
                 "stock_name": "核心科技",
                 "industry_name": "电子",
+            }
+        ],
+        "leading_control_picks": [
+            {
+                "symbol": "SZ000002",
+                "stock_name": "启动股份",
+                "industry_name": "电子",
+                "stage": "开始拉升",
+                "reason": "电子位于领先区；控盘量价代理成立；开始拉升。",
+                "invalidation": "跌破MA20时失效",
+                "action_label": "次日关注",
             }
         ],
         "watchlist": [],
@@ -280,6 +425,9 @@ def test_feishu_payload_contains_report_links_and_candidates() -> None:
     assert payload["msg_type"] == "post"
     serialized = str(payload)
     assert "SH600001" in serialized
+    assert "SZ000002" in serialized
+    assert "开始拉升" in serialized
+    assert "控盘量价代理" in serialized
     assert "http://example/report.pdf" in serialized
     assert "http://example/report.html" in serialized
     assert "查看交互四象限" in serialized
@@ -353,6 +501,18 @@ def test_render_interactive_html_contains_filters_and_board_data(
                 "leader_confirmed": False,
             },
         ],
+        "leading_control_picks": [
+            {
+                "symbol": "SZ000002",
+                "stock_name": "启动股份",
+                "industry_name": "电子",
+                "stage": "开始拉升",
+                "control_score": 88.2,
+                "reason": "电子位于领先区；20日上涨/下跌成交额比1.32，趋势效率0.28；开始拉升。",
+                "invalidation": "跌破MA20时失效",
+                "action_label": "次日关注",
+            }
+        ],
     }
     target = tmp_path / "report.html"
 
@@ -364,6 +524,9 @@ def test_render_interactive_html_contains_filters_and_board_data(
     assert "电子" in html
     assert "核心科技" in html
     assert 'id="industry-list"' in html
+    assert 'id="leading-control-picks"' in html
+    assert "领先区控盘阶段关注" in html
+    assert "20日上涨/下跌成交额比1.32" in html
     assert "领先区 / 改善区行业清单" in html
     assert 'id="board-search"' in html
     assert 'id="quadrant-filter"' in html
@@ -381,6 +544,7 @@ def test_write_outputs_publishes_dated_and_latest_html(
         "plot": [],
         "top": [],
         "focus_industries": [],
+        "leading_control_picks": [],
         "buy_candidates": [],
         "watchlist": [],
     }
@@ -481,6 +645,25 @@ def test_render_report_pdf_smoke(tmp_path: Path) -> None:
                 "close_pos": 0.91,
                 "trigger": "开盘涨幅不超过3%，且不跌破前一日低点或MA5",
                 "invalidation": "高开超过5%或跌破前一日低点时取消买入",
+            }
+        ],
+        "leading_control_picks": [
+            {
+                "symbol": "SZ000002",
+                "stock_name": "启动股份",
+                "industry_name": "电子",
+                "industry_score": 91.0,
+                "rs_ratio": 108.0,
+                "stage": "开始拉升",
+                "control_score": 88.2,
+                "up_down_amount_ratio20": 1.32,
+                "trend_efficiency20": 0.28,
+                "amount_ratio": 1.35,
+                "drawdown20": -0.018,
+                "ret5": 0.06,
+                "reason": "电子位于领先区；控盘量价代理成立；开始拉升。",
+                "invalidation": "跌破MA20时失效",
+                "action_label": "次日关注",
             }
         ],
         "watchlist": [],

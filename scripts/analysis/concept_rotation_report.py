@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--send-feishu", action="store_true")
     parser.add_argument("--max-buy", type=int, default=5)
     parser.add_argument("--max-watch", type=int, default=10)
+    parser.add_argument("--max-control-picks", type=int, default=10)
     parser.add_argument("--member-cache-days", type=float, default=7.0)
     return parser.parse_args()
 
@@ -382,6 +383,43 @@ def prepare_stock_history(stock: pd.DataFrame) -> pd.DataFrame:
     prepared["amount_ma5_calc"] = prepared["amount_ma5_calc"].fillna(
         prepared["amount_ma_5"]
     )
+    prepared["high20_calc"] = grouped["high"].transform(
+        lambda values: values.rolling(20, min_periods=15).max()
+    )
+    prepared["low20_calc"] = grouped["low"].transform(
+        lambda values: values.rolling(20, min_periods=15).min()
+    )
+    prepared["volatility20"] = grouped["pct_return"].transform(
+        lambda values: values.rolling(20, min_periods=15).std(ddof=0)
+    )
+    prepared["absolute_return20"] = grouped["pct_return"].transform(
+        lambda values: values.abs().rolling(20, min_periods=15).sum()
+    )
+    prepared["trend_efficiency20"] = (
+        prepared["ret20_calc"].abs() / prepared["absolute_return20"]
+    ).replace([np.inf, -np.inf], np.nan)
+    up_amount = prepared["amount"].where(prepared["pct_return"] > 0, 0.0)
+    down_amount = prepared["amount"].where(prepared["pct_return"] < 0, 0.0)
+    prepared["up_amount20"] = up_amount.groupby(prepared["symbol"]).transform(
+        lambda values: values.rolling(20, min_periods=15).sum()
+    )
+    prepared["down_amount20"] = down_amount.groupby(prepared["symbol"]).transform(
+        lambda values: values.rolling(20, min_periods=15).sum()
+    )
+    prepared["up_down_amount_ratio20"] = (
+        prepared["up_amount20"] / prepared["down_amount20"]
+    ).replace([np.inf, -np.inf], np.nan)
+    range20 = prepared["high20_calc"] - prepared["low20_calc"]
+    prepared["range_pos20"] = (
+        (prepared["close"] - prepared["low20_calc"]) / range20
+    ).replace([np.inf, -np.inf], np.nan)
+    prepared["drawdown20"] = (prepared["close"] / prepared["high20_calc"] - 1).replace(
+        [np.inf, -np.inf], np.nan
+    )
+    intraday_range = prepared["high"] - prepared["low"]
+    prepared["close_pos"] = (
+        (prepared["close"] - prepared["low"]) / intraday_range
+    ).replace([np.inf, -np.inf], 0.5)
 
     positive_float_mv = prepared["float_mv"].where(prepared["float_mv"] > 0)
     float_shares = positive_float_mv / prepared["close"]
@@ -781,6 +819,189 @@ def build_stock_recommendations(
     return buys, watches
 
 
+def build_leading_control_picks(
+    boards: pd.DataFrame,
+    latest: pd.DataFrame,
+    memberships: dict[str, set[str]],
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Select explainable washout/breakout setups from leading SW industries.
+
+    ``control`` is deliberately a price/volume proxy. Public OHLCV data cannot
+    identify the true positions of a particular class of market participant.
+    """
+    hard_limit = max(0, min(int(limit), 10))
+    if hard_limit == 0 or boards.empty or latest.empty:
+        return []
+    leading = boards[boards["quadrant"] == "领先区"].sort_values(
+        "score", ascending=False
+    )
+    if leading.empty:
+        return []
+    latest_by_symbol = latest.set_index("symbol", drop=False)
+    pool: list[dict[str, Any]] = []
+    required = [
+        "close",
+        "low",
+        "high",
+        "ma5_calc",
+        "ma20_calc",
+        "ret5_calc",
+        "ret20_calc",
+        "pct_return",
+        "amount",
+        "amount_ma5_calc",
+        "high20_calc",
+        "low20_calc",
+        "up_down_amount_ratio20",
+        "trend_efficiency20",
+        "volatility20",
+        "range_pos20",
+        "drawdown20",
+        "close_pos",
+    ]
+    for _, industry in leading.iterrows():
+        symbols = sorted(memberships.get(str(industry["code"]), set()))
+        mapped = [symbol for symbol in symbols if symbol in latest_by_symbol.index]
+        for symbol in mapped:
+            row = latest_by_symbol.loc[symbol]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            name = str(row.get("stock_name") or symbol)
+            is_st_value = pd.to_numeric(row.get("is_st"), errors="coerce")
+            limit_up = pd.to_numeric(row.get("limit_up_today"), errors="coerce")
+            limit_down = pd.to_numeric(row.get("limit_down_today"), errors="coerce")
+            is_st = (pd.notna(is_st_value) and is_st_value != 0) or (
+                "ST" in name.upper()
+            )
+            is_limit = (
+                (pd.notna(limit_up) and limit_up != 0)
+                or (pd.notna(limit_down) and limit_down != 0)
+                or abs(float(row.get("pct_return") or 0)) >= 0.095
+            )
+            if (
+                is_st
+                or is_limit
+                or any(key not in row.index or pd.isna(row[key]) for key in required)
+            ):
+                continue
+            values = {key: float(row[key]) for key in required}
+            if not all(math.isfinite(value) for value in values.values()):
+                continue
+            if (
+                values["close"] <= 0
+                or values["high"] < values["low"]
+                or values["amount_ma5_calc"] <= 0
+                or values["amount"] < 0
+            ):
+                continue
+            amount_ratio = values["amount"] / values["amount_ma5_calc"]
+            controlled = (
+                values["close"] > values["ma20_calc"]
+                and values["ma5_calc"] >= values["ma20_calc"]
+                and values["ret20_calc"] > 0
+                and values["up_down_amount_ratio20"] >= 0.95
+                and values["trend_efficiency20"] >= 0.12
+                and values["volatility20"] <= 0.07
+                and values["range_pos20"] >= 0.55
+            )
+            if not controlled:
+                continue
+            washout = (
+                -0.06 <= values["ret5_calc"] <= 0.03
+                and -0.12 <= values["drawdown20"] <= -0.02
+                and 0.55 <= amount_ratio <= 1.05
+                and values["close_pos"] >= 0.45
+            )
+            breakout = (
+                values["close"] > values["ma5_calc"] > values["ma20_calc"]
+                and 0.02 <= values["ret5_calc"] <= 0.15
+                and -0.03 <= values["drawdown20"] <= 0
+                and 1.05 <= amount_ratio <= 2.50
+                and values["close_pos"] >= 0.65
+                and 0 <= values["pct_return"] <= 0.07
+            )
+            if not washout and not breakout:
+                continue
+            stage = "开始拉升" if breakout else "洗盘"
+            pool.append(
+                {
+                    "symbol": str(symbol),
+                    "stock_name": name,
+                    "industry_code": str(industry["code"]),
+                    "industry_name": str(industry["name"]),
+                    "industry_score": float(industry["score"]),
+                    "quadrant": "领先区",
+                    "rs_ratio": float(industry.get("rs_ratio") or 100.0),
+                    "stage": stage,
+                    "close": values["close"],
+                    "ma20": values["ma20_calc"],
+                    "ret5": values["ret5_calc"],
+                    "ret20": values["ret20_calc"],
+                    "pct_change": values["pct_return"],
+                    "amount_ratio": amount_ratio,
+                    "close_pos": values["close_pos"],
+                    "range_pos20": values["range_pos20"],
+                    "drawdown20": values["drawdown20"],
+                    "up_down_amount_ratio20": values["up_down_amount_ratio20"],
+                    "trend_efficiency20": values["trend_efficiency20"],
+                    "volatility20": values["volatility20"],
+                }
+            )
+    if not pool:
+        return []
+
+    scored = pd.DataFrame(pool)
+    scored["control_score"] = 100 * (
+        0.30 * percentile(scored["up_down_amount_ratio20"])
+        + 0.25 * percentile(scored["trend_efficiency20"])
+        + 0.15 * percentile(scored["range_pos20"])
+        + 0.15 * percentile(-scored["volatility20"])
+        + 0.15 * percentile(scored["ret20"])
+    )
+    scored["selection_score"] = (
+        0.50 * scored["industry_score"]
+        + 0.45 * scored["control_score"]
+        + scored["stage"].map({"开始拉升": 5.0, "洗盘": 2.0}).fillna(0)
+    )
+    selected: list[dict[str, Any]] = []
+    seen_symbols: set[str] = set()
+    industry_counts: dict[str, int] = {}
+    for item in scored.sort_values("selection_score", ascending=False).to_dict(
+        orient="records"
+    ):
+        symbol = str(item["symbol"])
+        industry_code = str(item["industry_code"])
+        if symbol in seen_symbols or industry_counts.get(industry_code, 0) >= 2:
+            continue
+        if item["stage"] == "洗盘":
+            stage_evidence = (
+                f"洗盘：距20日高点{item['drawdown20']:.1%}，量能缩至"
+                f"5日均额{item['amount_ratio']:.2f}倍，仍守MA20"
+            )
+            invalidation = "收盘跌破MA20或前低、出现放量长阴时失效"
+        else:
+            stage_evidence = (
+                f"开始拉升：距20日高点{item['drawdown20']:.1%}，量能为"
+                f"5日均额{item['amount_ratio']:.2f}倍，近5日{item['ret5']:+.1%}"
+            )
+            invalidation = "收盘跌破MA20、放量长阴或次日高开超过5%时失效"
+        item["reason"] = (
+            f"{item['industry_name']}位于领先区（行业得分{item['industry_score']:.1f}，"
+            f"RS {item['rs_ratio']:.1f}）；控盘量价代理：20日上涨/下跌成交额比"
+            f"{item['up_down_amount_ratio20']:.2f}、趋势效率"
+            f"{item['trend_efficiency20']:.2f}；{stage_evidence}。"
+        )
+        item["invalidation"] = invalidation
+        item["action_label"] = "次日关注"
+        selected.append({key: finite_number(value) for key, value in item.items()})
+        seen_symbols.add(symbol)
+        industry_counts[industry_code] = industry_counts.get(industry_code, 0) + 1
+        if len(selected) >= hard_limit:
+            break
+    return selected
+
+
 def _records(frame: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
     return [
         {key: finite_number(value) for key, value in row.items()}
@@ -794,6 +1015,7 @@ def build_report(
     memberships: dict[str, list[dict[str, Any]]],
     max_buy: int = 5,
     max_watch: int = 10,
+    max_control_picks: int = 10,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     prepared = prepare_stock_history(stock)
     boards, member_sets, market = analyze_industries(prepared, industries, memberships)
@@ -801,6 +1023,9 @@ def build_report(
     latest = prepared[prepared["trade_date"] == latest_date].copy()
     buys, watches = build_stock_recommendations(
         boards, latest, member_sets, max_buy=max_buy, max_watch=max_watch
+    )
+    control_picks = build_leading_control_picks(
+        boards, latest, member_sets, limit=max_control_picks
     )
     today = datetime.now().astimezone().date()
     data_age_days = (today - pd.Timestamp(latest_date).date()).days
@@ -828,6 +1053,9 @@ def build_report(
             item["unmet_conditions"] = f"市场环境为{market['regime']}，降级为观察"
         watches = (buys + watches)[:max_watch]
         buys = []
+        for item in control_picks:
+            item["action_label"] = "仅观察"
+            item["risk_note"] = f"当前市场状态为{market['regime']}，不作为条件买入信号"
 
     ranked = boards.sort_values("score", ascending=False)
     eligible = ranked[ranked["eligible"]]
@@ -914,6 +1142,7 @@ def build_report(
             str(key): int(value)
             for key, value in boards["quadrant"].value_counts().items()
         },
+        "leading_control_picks": control_picks,
         "buy_candidates": buys,
         "watchlist": watches,
         "method": {
@@ -928,6 +1157,13 @@ def build_report(
             ),
             "candidate_policy": (
                 "仅输出次日条件触发候选；退潮或过热环境自动降级为观察"
+            ),
+            "control_proxy": (
+                "主力控盘仅为量价代理：综合20日上涨/下跌成交额结构、趋势效率、"
+                "区间位置与波动率；不代表真实机构持仓"
+            ),
+            "control_stage": (
+                "仅从领先区筛选守住MA20的缩量洗盘，或接近20日高点且温和放量的开始拉升"
             ),
             "membership": (
                 "Tushare申万2021版一级行业及最新成分，使用7日缓存并做覆盖率校验"
@@ -1180,6 +1416,41 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             ),
             Paragraph("RRG 四象限", heading_style),
             Image(_rrg_chart(report["plot"]), width=176 * mm, height=102 * mm),
+            PageBreak(),
+            Paragraph("领先区控盘阶段关注（最多10只）", heading_style),
+        ]
+    )
+    control_rows = [["代码/名称", "申万行业", "阶段", "控盘分", "推荐理由 / 失效条件"]]
+    for item in report.get("leading_control_picks", []):
+        risk_note = item.get("risk_note")
+        reason = f"{item['reason']}\n失效：{item['invalidation']}"
+        if risk_note:
+            reason = f"{reason}\n风险：{risk_note}"
+        control_rows.append(
+            [
+                f"{item['symbol']}\n{item['stock_name']}",
+                item["industry_name"],
+                f"{item['stage']}\n{item.get('action_label', '次日关注')}",
+                f"{item['control_score']:.1f}",
+                reason,
+            ]
+        )
+    if len(control_rows) == 1:
+        control_rows.append(
+            ["无", "-", "-", "-", "领先区暂无同时满足控盘代理与阶段条件的股票"]
+        )
+    story.extend(
+        [
+            Paragraph(
+                "“主力控盘”为公开量价数据构建的代理信号，并非真实机构持仓识别；"
+                "仅筛选洗盘或开始拉升阶段，行情滞后时一律仅观察。",
+                small_style,
+            ),
+            Spacer(1, 5),
+            table(
+                control_rows,
+                [29 * mm, 22 * mm, 20 * mm, 17 * mm, 85 * mm],
+            ),
             PageBreak(),
             Paragraph("领先区 / 改善区行业清单", heading_style),
         ]
@@ -1520,6 +1791,29 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     focus_table_rows = "".join(focus_rows) or (
         '<tr><td colspan="6" class="empty-row">当前没有位于领先区或改善区的行业</td></tr>'
     )
+    control_rows: list[str] = []
+    for item in report.get("leading_control_picks", []):
+        symbol = escape(str(item.get("symbol") or "-"))
+        stock_name = escape(str(item.get("stock_name") or "未命名"))
+        industry_name = escape(str(item.get("industry_name") or "-"))
+        stage = escape(str(item.get("stage") or "-"))
+        action_label = escape(str(item.get("action_label") or "次日关注"))
+        reason = escape(str(item.get("reason") or "-"))
+        invalidation = escape(str(item.get("invalidation") or "-"))
+        risk_note = escape(str(item.get("risk_note") or ""))
+        risk_html = f"<small>风险：{risk_note}</small>" if risk_note else ""
+        control_rows.append(
+            "<tr>"
+            f"<td><strong>{stock_name}</strong><small>{symbol}</small></td>"
+            f"<td>{industry_name}</td>"
+            f'<td><span class="stage-tag">{stage}</span><small>{action_label}</small></td>'
+            f'<td class="numeric">{number(item, "control_score"):.1f}</td>'
+            f"<td>{reason}<small>失效：{invalidation}</small>{risk_html}</td>"
+            "</tr>"
+        )
+    control_table_rows = "".join(control_rows) or (
+        '<tr><td colspan="5" class="empty-row">领先区暂无同时满足控盘代理与阶段条件的股票</td></tr>'
+    )
     html_document = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1576,6 +1870,9 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     .industry-link {{ min-height:0; padding:0; border:0; border-radius:0; background:transparent; color:var(--accent); font-weight:650; }}
     .industry-link:hover {{ text-decoration:underline; }}
     .quadrant-tag {{ display:inline-block; padding:4px 8px; border-radius:999px; background:var(--soft); white-space:nowrap; }}
+    .stage-tag {{ display:inline-block; padding:4px 8px; border-radius:999px; background:color-mix(in srgb,#16835d 14%,var(--surface)); color:#16835d; white-space:nowrap; font-weight:650; }}
+    .control-note {{ padding:12px 14px; border-left:3px solid #ca8a04; background:var(--soft); border-radius:8px; line-height:1.6; }}
+    #leading-control-picks td:last-child {{ min-width:420px; line-height:1.55; }}
     .empty-row {{ color:var(--muted); text-align:center; }}
     footer {{ margin-top:17px; color:var(--muted); font-size:13px; line-height:1.65; }}
     @media (prefers-color-scheme:dark) {{ :root {{ --bg:#101722; --surface:#172130; --text:#edf3f8; --muted:#aab6c4; --border:#2d3a4a; --accent:#85baf0; --soft:#202d3e; }} .panel {{ box-shadow:none; }} }}
@@ -1630,6 +1927,16 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
       <div id="detail-eligible" class="badge">未进入严格候选</div>
     </aside>
   </div>
+  <section class="panel table-panel" aria-labelledby="control-picks-title">
+    <h2 id="control-picks-title">领先区控盘阶段关注（最多10只）</h2>
+    <p class="control-note">“主力控盘”是基于20日成交额结构、趋势效率、区间位置和波动率的量价代理，不代表真实机构持仓；仅保留洗盘或开始拉升阶段，市场退潮、过热或数据滞后时自动降级为仅观察。</p>
+    <div class="table-responsive">
+      <table id="leading-control-picks">
+        <thead><tr><th>股票</th><th>申万行业</th><th>阶段</th><th class="numeric">控盘分</th><th>推荐理由 / 失效条件</th></tr></thead>
+        <tbody>{control_table_rows}</tbody>
+      </table>
+    </div>
+  </section>
   <section class="panel table-panel" aria-labelledby="industry-list-title">
     <h2 id="industry-list-title">领先区 / 改善区行业清单</h2>
     <p>按所在区域及综合得分排序；点击行业名称可同步查看上方详情。</p>
@@ -1733,6 +2040,35 @@ def build_feishu_payload(
         )
         or "无"
     )
+    control_picks = report.get("leading_control_picks", [])[:10]
+    control_content: list[list[dict[str, str]]] = [
+        [
+            {
+                "tag": "text",
+                "text": (
+                    "领先区控盘阶段关注（量价代理，最多10只）："
+                    if control_picks
+                    else "领先区控盘阶段关注：暂无同时满足控盘代理与阶段条件的股票"
+                ),
+            }
+        ]
+    ]
+    for index, item in enumerate(control_picks, 1):
+        risk_note = f"；{item['risk_note']}" if item.get("risk_note") else ""
+        control_content.append(
+            [
+                {
+                    "tag": "text",
+                    "text": (
+                        f"{index}. {item['symbol']} {item['stock_name']}"
+                        f"［{item['industry_name']}｜{item['stage']}｜"
+                        f"{item.get('action_label', '次日关注')}］\n"
+                        f"理由：{item['reason']}\n"
+                        f"失效：{item['invalidation']}{risk_note}"
+                    ),
+                }
+            ]
+        )
     content = [
         [
             {
@@ -1741,6 +2077,7 @@ def build_feishu_payload(
             }
         ],
         [{"tag": "text", "text": f"强势申万行业：{top}"}],
+        *control_content,
         [{"tag": "text", "text": f"次日条件候选：{buys}"}],
         [{"tag": "text", "text": f"观察池：{watches}"}],
         [
@@ -1855,6 +2192,7 @@ def main() -> int:
         memberships,
         max_buy=args.max_buy,
         max_watch=args.max_watch,
+        max_control_picks=args.max_control_picks,
     )
     pdf_path, _latest_pdf_path, html_path, _latest_html_path = write_outputs(
         report, boards, output_dir
@@ -1881,6 +2219,7 @@ def main() -> int:
                 "html": str(html_path),
                 "html_url": html_url,
                 "buy_candidates": len(report["buy_candidates"]),
+                "leading_control_picks": len(report["leading_control_picks"]),
                 "watchlist": len(report["watchlist"]),
                 "feishu_sent": bool(args.send_feishu),
             },
