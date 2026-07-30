@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pytest
 from scripts.analysis.leading_control_backtest import (
     _build_periods,
     calculate_performance_metrics,
+    load_database_tail,
     point_in_time_memberships,
     run_monthly_backtest,
     validate_market_data,
@@ -290,6 +292,75 @@ def test_period_builder_produces_exactly_sixty_open_to_open_months() -> None:
         pd.Timestamp("2026-07-01"),
         "2026-06",
     )
+
+
+def test_database_tail_normalizes_postgres_dates_before_snapshot_merge() -> None:
+    columns = [
+        "trade_date",
+        "symbol",
+        "stock_name",
+        "is_st",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "pct_change",
+        "factor",
+        "turnover_rate",
+        "float_mv",
+        "total_mv",
+        "limit_up_today",
+        "limit_down_today",
+    ]
+
+    class Cursor:
+        description = [(column,) for column in columns]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args):
+            return None
+
+        def fetchall(self):
+            return [
+                (
+                    date(2026, 7, 1),
+                    "SH600001",
+                    "样本",
+                    0,
+                    10.0,
+                    10.5,
+                    9.8,
+                    10.2,
+                    1000.0,
+                    10000.0,
+                    2.0,
+                    1.2,
+                    0.01,
+                    1e9,
+                    2e9,
+                    0,
+                    0,
+                )
+            ]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            return None
+
+    tail = load_database_tail("2026-06-30", "2026-07-01", connection_factory=Connection)
+
+    assert tail.loc[0, "trade_date"] == pd.Timestamp("2026-07-01")
+    assert tail.loc[0, "adj_open"] == pytest.approx(12.0)
 
 
 def test_write_outputs_creates_complete_self_contained_artifacts(
