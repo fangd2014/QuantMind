@@ -28,7 +28,7 @@ Unified scripts directory for the QuantMind project, organized by functionality.
 - `scripts/pipeline/run_daily_fusion_pipeline.py`: Daily dual-model fusion pipeline.
 - `scripts/pipeline/run_engine_margin_topk_2024.py`: 调用 `quantmind-engine` 的 Qlib 回测接口，执行 2024 年固定两融股票池的多空 TopK 回测，并导出 `summary.json / equity_curve.csv / trades.csv`。
 - `scripts/sync_to_postgres_v2.py`: 兼容入口脚本，将 `db/custom/fundamental_aligned.parquet` 增量同步到 `stock_daily_latest`，默认会额外回刷最近 30 天，适合日常修订数据补齐。
-- `scripts/analysis/concept_rotation_report.py`: 从本地 `stock_daily_latest` 计算申万 2021 版一级行业扩散度、RRG、龙头确认和次日条件候选，输出 JSON/CSV/PDF/交互 HTML；行业分类和最新成分来自 Tushare 并带 7 日本地缓存。
+- `scripts/analysis/concept_rotation_report.py`: 从本地 `stock_daily_latest` 计算申万 2021 版一级行业扩散度、RRG、龙头确认、次日条件候选，以及领先区内“控盘量价代理 + 洗盘/开始拉升”关注股（硬限制最多 10 只、单行业最多 2 只），输出 JSON/CSV/PDF/交互 HTML；行业分类和最新成分来自 Tushare 并带 7 日本地缓存。`--max-control-picks` 可调低数量但不会突破 10 只；该指标不代表真实机构持仓。
 - `scripts/ops/run_concept_rotation_report.sh`: 从服务器 `.env` 安全读取 `WEB_HOOK`、从 `/root/.bashrc` 读取 `TUSHARE_TOKEN`，在 `quantmind` 容器内生成日报并推送飞书摘要、交互四象限和 PDF 下载链接。
 - `scripts/ops/install_concept_rotation_cron.sh`: 幂等安装每天 20:00 的申万行业轮动日报宿主机 cron 任务。
 - `scripts/data/processing/sync_margin_instruments.py`: 将 [融资融券.xlsx](/Users/qusong/git/quantmind/data/融资融券.xlsx) 同步为 `db/qlib_data/instruments/margin.txt`，供回测直接复用固定两融股票池。
