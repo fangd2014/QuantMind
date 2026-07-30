@@ -68,3 +68,24 @@ def test_evaluate_quality_warns_on_suspicious_units_without_rewriting() -> None:
     assert issues == []
     assert any("涨跌幅99分位" in item for item in warnings)
     assert any("全市场成交额" in item for item in warnings)
+
+
+def test_evaluate_quality_treats_flat_suspended_rows_as_warning() -> None:
+    measurements = _healthy_measurements()
+    measurements["latest_suspended_rows"] = 9
+
+    issues, warnings = evaluate_quality(measurements, expected_date="2026-07-29")
+
+    assert issues == []
+    assert any("停牌或无成交9行" in item for item in warnings)
+
+
+def test_evaluate_quality_keeps_extreme_event_as_warning() -> None:
+    measurements = _healthy_measurements()
+    measurements["latest_extreme_return_rows"] = 1
+    measurements["recent_extreme_return_rows"] = 1
+
+    issues, warnings = evaluate_quality(measurements, expected_date="2026-07-29")
+
+    assert issues == []
+    assert any("涨跌幅绝对值超过25%" in item for item in warnings)

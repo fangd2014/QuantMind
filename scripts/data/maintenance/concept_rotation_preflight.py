@@ -116,7 +116,6 @@ def evaluate_quality(
         "latest_null_critical_rows": "关键行情字段缺失",
         "latest_invalid_ohlc_rows": "OHLC价格关系异常",
         "latest_negative_flow_rows": "成交量或成交额为负",
-        "latest_extreme_return_rows": "单日涨跌幅绝对值超过25%",
     }
     for key, label in blocking_counts.items():
         count = int(measurements.get(key) or 0)
@@ -136,6 +135,15 @@ def evaluate_quality(
     amount_ratio = _finite(measurements.get("latest_market_amount_ratio"), 1.0)
     if amount_ratio and not 0.20 <= amount_ratio <= 5.0:
         warnings.append(f"最新全市场成交额为前日{amount_ratio:.2f}倍")
+    suspended_rows = int(measurements.get("latest_suspended_rows") or 0)
+    if suspended_rows:
+        warnings.append(f"停牌或无成交{suspended_rows}行，已从选股计算中隔离")
+    extreme_rows = int(measurements.get("recent_extreme_return_rows") or 0)
+    if extreme_rows:
+        warnings.append(
+            f"最近{history_days}个交易日有{extreme_rows}行涨跌幅绝对值超过25%，"
+            "可能为上市/退市等不设涨跌停事件，保留原值并由选股规则隔离"
+        )
     return issues, warnings
 
 
@@ -182,8 +190,16 @@ def audit_database(
                     ) AS invalid_symbol_rows,
                     COUNT(*) FILTER (
                         WHERE open IS NULL OR high IS NULL OR low IS NULL
-                           OR close IS NULL OR amount IS NULL OR volume IS NULL
+                           OR close IS NULL
+                           OR (
+                                (amount IS NULL OR volume IS NULL)
+                                AND NOT (open = high AND high = low AND low = close)
+                           )
                     ) AS null_critical_rows,
+                    COUNT(*) FILTER (
+                        WHERE (amount IS NULL OR volume IS NULL)
+                          AND open = high AND high = low AND low = close
+                    ) AS suspended_rows,
                     COUNT(*) FILTER (
                         WHERE open <= 0 OR high <= 0 OR low <= 0 OR close <= 0
                            OR high < GREATEST(open, close, low)
@@ -205,25 +221,32 @@ def audit_database(
             )
             latest_quality = cursor.fetchone()
             recent_dates = [row[0] for row in dates[:minimum_history_days]]
-            pct_change_threshold = 25.0 if _finite(latest_quality[6]) > 1 else 0.25
+            pct_change_threshold = 25.0 if _finite(latest_quality[7]) > 1 else 0.25
             cursor.execute(
                 """
-                SELECT COUNT(*) FILTER (
+                SELECT
+                COUNT(*) FILTER (
                     WHERE symbol !~ '^(SH|SZ|BJ)[0-9]{6}$'
                        OR open IS NULL OR high IS NULL OR low IS NULL
-                       OR close IS NULL OR amount IS NULL OR volume IS NULL
+                       OR close IS NULL
+                       OR (
+                            (amount IS NULL OR volume IS NULL)
+                            AND NOT (open = high AND high = low AND low = close)
+                       )
                        OR open <= 0 OR high <= 0 OR low <= 0 OR close <= 0
                        OR high < GREATEST(open, close, low)
                        OR low > LEAST(open, close, high)
                        OR volume < 0 OR amount < 0
-                       OR ABS(pct_change) > %s
-                )
+                ),
+                COUNT(*) FILTER (WHERE ABS(pct_change) > %s)
                 FROM stock_daily_latest
                 WHERE trade_date = ANY(%s)
                 """,
                 (pct_change_threshold, recent_dates),
             )
-            recent_invalid = int(cursor.fetchone()[0] or 0)
+            recent_quality = cursor.fetchone()
+            recent_invalid = int(recent_quality[0] or 0)
+            recent_extreme = int(recent_quality[1] or 0)
     finally:
         connection.close()
     measurements = {
@@ -236,16 +259,18 @@ def audit_database(
         "latest_duplicate_rows": int(latest_quality[0] or 0),
         "latest_invalid_symbol_rows": int(latest_quality[1] or 0),
         "latest_null_critical_rows": int(latest_quality[2] or 0),
-        "latest_invalid_ohlc_rows": int(latest_quality[3] or 0),
-        "latest_negative_flow_rows": int(latest_quality[4] or 0),
-        "latest_extreme_return_rows": int(latest_quality[5] or 0),
-        "pct_change_q99": _finite(latest_quality[6]),
+        "latest_suspended_rows": int(latest_quality[3] or 0),
+        "latest_invalid_ohlc_rows": int(latest_quality[4] or 0),
+        "latest_negative_flow_rows": int(latest_quality[5] or 0),
+        "latest_extreme_return_rows": int(latest_quality[6] or 0),
+        "pct_change_q99": _finite(latest_quality[7]),
         "latest_market_amount_ratio": (
             _finite(latest_amount) / _finite(previous_amount, 1.0)
             if _finite(previous_amount) > 0
             else 1.0
         ),
         "recent_invalid_rows": recent_invalid,
+        "recent_extreme_return_rows": recent_extreme,
     }
     issues, warnings = evaluate_quality(
         measurements,
