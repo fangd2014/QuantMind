@@ -379,6 +379,15 @@ def prepare_stock_history(stock: pd.DataFrame) -> pd.DataFrame:
     prepared["amount_ma5_calc"] = grouped["amount"].transform(
         lambda values: values.rolling(5, min_periods=3).mean()
     )
+    prepared["amount_max20_calc"] = grouped["amount"].transform(
+        lambda values: values.rolling(20, min_periods=15).max()
+    )
+    prepared["ema12_calc"] = grouped["close"].transform(
+        lambda values: values.ewm(span=12, adjust=False, min_periods=10).mean()
+    )
+    prepared["ema36_calc"] = grouped["close"].transform(
+        lambda values: values.ewm(span=36, adjust=False, min_periods=25).mean()
+    )
     prepared["ma5_calc"] = prepared["ma5_calc"].fillna(prepared["ma5"])
     prepared["ma20_calc"] = prepared["ma20_calc"].fillna(prepared["ma20"])
     prepared["amount_ma5_calc"] = prepared["amount_ma5_calc"].fillna(
@@ -410,6 +419,23 @@ def prepare_stock_history(stock: pd.DataFrame) -> pd.DataFrame:
     prepared["up_down_amount_ratio20"] = (
         prepared["up_amount20"] / prepared["down_amount20"]
     ).replace([np.inf, -np.inf], np.nan)
+    # Daily OHLCV cannot reveal real institutional orders.  This bounded
+    # signed-flow ratio is only an OBV-direction proxy: positive values mean
+    # that more public-market volume occurred on rising days over the last
+    # five sessions.  Amount is used only when volume is unavailable.
+    flow_base = prepared["volume"].where(prepared["volume"] > 0, prepared["amount"])
+    signed_flow = flow_base.fillna(0) * np.sign(prepared["pct_return"].fillna(0))
+    signed_flow5 = signed_flow.groupby(prepared["symbol"]).transform(
+        lambda values: values.rolling(5, min_periods=4).sum()
+    )
+    absolute_flow5 = (
+        flow_base.fillna(0)
+        .groupby(prepared["symbol"])
+        .transform(lambda values: values.rolling(5, min_periods=4).sum())
+    )
+    prepared["obv_balance5"] = (signed_flow5 / absolute_flow5).replace(
+        [np.inf, -np.inf], np.nan
+    )
     range20 = prepared["high20_calc"] - prepared["low20_calc"]
     prepared["range_pos20"] = (
         (prepared["close"] - prepared["low20_calc"]) / range20
@@ -852,6 +878,10 @@ def build_leading_control_picks(
         "pct_return",
         "amount",
         "amount_ma5_calc",
+        "amount_max20_calc",
+        "ema12_calc",
+        "ema36_calc",
+        "obv_balance5",
         "high20_calc",
         "low20_calc",
         "up_down_amount_ratio20",
@@ -893,10 +923,14 @@ def build_leading_control_picks(
                 values["close"] <= 0
                 or values["high"] < values["low"]
                 or values["amount_ma5_calc"] <= 0
+                or values["amount_max20_calc"] <= 0
+                or values["ema36_calc"] <= 0
                 or values["amount"] < 0
             ):
                 continue
             amount_ratio = values["amount"] / values["amount_ma5_calc"]
+            peak_amount_ratio = values["amount"] / values["amount_max20_calc"]
+            ema_spread = values["ema12_calc"] / values["ema36_calc"] - 1
             controlled = (
                 values["close"] > values["ma20_calc"]
                 and values["ma5_calc"] >= values["ma20_calc"]
@@ -925,6 +959,42 @@ def build_leading_control_picks(
             if not washout and not breakout:
                 continue
             stage = "开始拉升" if breakout else "洗盘"
+            distribution_risk = (
+                values["range_pos20"] >= 0.75
+                and amount_ratio >= 1.80
+                and values["pct_return"] <= 0.015
+                and values["obv_balance5"] <= -0.10
+            ) or (
+                amount_ratio >= 2.30
+                and values["pct_return"] < 0.02
+                and values["close_pos"] < 0.60
+            )
+            if distribution_risk:
+                # High-position, high-volume stagnation/down-flow is treated as
+                # distribution risk and must never enter the recommendation list.
+                continue
+            if breakout:
+                pull_evidence = sum(
+                    (
+                        amount_ratio >= 1.20,
+                        values["pct_return"] >= 0.02,
+                        values["obv_balance5"] > 0.05,
+                        ema_spread > 0,
+                    )
+                )
+                main_force_intent = "主动拉升" if pull_evidence >= 3 else "试盘拉升"
+                intent_confidence = "高" if pull_evidence == 4 else "中"
+            else:
+                wash_evidence = sum(
+                    (
+                        peak_amount_ratio <= 0.50,
+                        amount_ratio <= 0.90,
+                        values["obv_balance5"] >= 0,
+                        values["close"] > values["ma20_calc"],
+                    )
+                )
+                main_force_intent = "洗盘吸筹" if wash_evidence >= 3 else "控盘整理"
+                intent_confidence = "高" if wash_evidence == 4 else "中"
             pool.append(
                 {
                     "symbol": str(symbol),
@@ -941,12 +1011,17 @@ def build_leading_control_picks(
                     "ret20": values["ret20_calc"],
                     "pct_change": values["pct_return"],
                     "amount_ratio": amount_ratio,
+                    "peak_amount_ratio": peak_amount_ratio,
+                    "ema_spread": ema_spread,
+                    "obv_balance5": values["obv_balance5"],
                     "close_pos": values["close_pos"],
                     "range_pos20": values["range_pos20"],
                     "drawdown20": values["drawdown20"],
                     "up_down_amount_ratio20": values["up_down_amount_ratio20"],
                     "trend_efficiency20": values["trend_efficiency20"],
                     "volatility20": values["volatility20"],
+                    "main_force_intent": main_force_intent,
+                    "intent_confidence": intent_confidence,
                 }
             )
     if not pool:
@@ -981,12 +1056,24 @@ def build_leading_control_picks(
                 f"5日均额{item['amount_ratio']:.2f}倍，仍守MA20"
             )
             invalidation = "收盘跌破MA20或前低、出现放量长阴时失效"
+            intent_evidence = (
+                f"量能为20日峰值{item['peak_amount_ratio']:.2f}倍、"
+                f"5日OBV方向代理{item['obv_balance5']:+.2f}，"
+                f"EMA12/36差{item['ema_spread']:+.1%}"
+            )
         else:
             stage_evidence = (
                 f"开始拉升：距20日高点{item['drawdown20']:.1%}，量能为"
                 f"5日均额{item['amount_ratio']:.2f}倍，近5日{item['ret5']:+.1%}"
             )
             invalidation = "收盘跌破MA20、放量长阴或次日高开超过5%时失效"
+            intent_evidence = (
+                f"当日量比{item['amount_ratio']:.2f}、涨跌幅"
+                f"{item['pct_change']:+.1%}，5日OBV方向代理"
+                f"{item['obv_balance5']:+.2f}，EMA12/36差"
+                f"{item['ema_spread']:+.1%}"
+            )
+        item["intent_evidence"] = intent_evidence
         item["reason"] = (
             f"{item['industry_name']}位于领先区（行业得分{item['industry_score']:.1f}，"
             f"RS {item['rs_ratio']:.1f}）；控盘量价代理：20日上涨/下跌成交额比"
@@ -1165,6 +1252,15 @@ def build_report(
             ),
             "control_stage": (
                 "仅从领先区筛选守住MA20的缩量洗盘，或接近20日高点且温和放量的开始拉升"
+            ),
+            "main_force_intent": (
+                "主力意图为公开日线代理推断：以EMA12/36趋势、5日OBV方向代理、"
+                "量能相对5日均值与20日峰值、区间位置多因子共振，标注洗盘吸筹、"
+                "控盘整理、试盘拉升或主动拉升；高位放量滞涨/负向OBV按派发风险剔除"
+            ),
+            "unavailable_factors": (
+                "现有数据不含真实机构订单、CYW、筹码集中度和机构持仓变化，"
+                "不得据此宣称识别真实主力账户或持仓"
             ),
             "membership": (
                 "Tushare申万2021版一级行业及最新成分，使用7日缓存并做覆盖率校验"
@@ -1432,17 +1528,26 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             Paragraph("领先区控盘阶段关注（最多10只）", heading_style),
         ]
     )
-    control_rows = [["代码/名称", "申万行业", "阶段", "控盘分", "推荐理由 / 失效条件"]]
+    control_rows = [
+        ["代码/名称", "申万行业", "阶段/主力意图", "控盘分", "推荐理由 / 失效条件"]
+    ]
     for item in report.get("leading_control_picks", []):
         risk_note = item.get("risk_note")
-        reason = f"{item['reason']}\n失效：{item['invalidation']}"
+        intent = item.get("main_force_intent") or item.get("stage") or "待确认"
+        confidence = item.get("intent_confidence") or "低"
+        intent_evidence = item.get("intent_evidence") or "量价证据不足"
+        reason = (
+            f"主力意图依据：{intent_evidence}\n{item['reason']}\n"
+            f"失效：{item['invalidation']}"
+        )
         if risk_note:
             reason = f"{reason}\n风险：{risk_note}"
         control_rows.append(
             [
                 f"{item['symbol']}\n{item['stock_name']}",
                 item["industry_name"],
-                f"{item['stage']}\n{item.get('action_label', '次日关注')}",
+                f"{item['stage']}\n{intent}（{confidence}）\n"
+                f"{item.get('action_label', '次日关注')}",
                 f"{item['control_score']:.1f}",
                 reason,
             ]
@@ -1455,6 +1560,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         [
             Paragraph(
                 "“主力控盘”为公开量价数据构建的代理信号，并非真实机构持仓识别；"
+                "主力意图由EMA、OBV方向代理、量能和区间位置多因子共振推断；"
                 "仅筛选洗盘或开始拉升阶段，行情滞后时一律仅观察。",
                 small_style,
             ),
@@ -1809,6 +1915,11 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
         stock_name = escape(str(item.get("stock_name") or "未命名"))
         industry_name = escape(str(item.get("industry_name") or "-"))
         stage = escape(str(item.get("stage") or "-"))
+        intent = escape(
+            str(item.get("main_force_intent") or item.get("stage") or "待确认")
+        )
+        confidence = escape(str(item.get("intent_confidence") or "低"))
+        intent_evidence = escape(str(item.get("intent_evidence") or "量价证据不足"))
         action_label = escape(str(item.get("action_label") or "次日关注"))
         reason = escape(str(item.get("reason") or "-"))
         invalidation = escape(str(item.get("invalidation") or "-"))
@@ -1818,9 +1929,12 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
             "<tr>"
             f"<td><strong>{stock_name}</strong><small>{symbol}</small></td>"
             f"<td>{industry_name}</td>"
-            f'<td><span class="stage-tag">{stage}</span><small>{action_label}</small></td>'
+            f'<td><span class="stage-tag">{stage}</span>'
+            f"<small>主力意图：{intent}（{confidence}）</small>"
+            f"<small>{action_label}</small></td>"
             f'<td class="numeric">{number(item, "control_score"):.1f}</td>'
-            f"<td>{reason}<small>失效：{invalidation}</small>{risk_html}</td>"
+            f"<td><strong>意图依据：</strong>{intent_evidence}<br>{reason}"
+            f"<small>失效：{invalidation}</small>{risk_html}</td>"
             "</tr>"
         )
     control_table_rows = "".join(control_rows) or (
@@ -1941,10 +2055,10 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
   </div>
   <section class="panel table-panel" aria-labelledby="control-picks-title">
     <h2 id="control-picks-title">领先区控盘阶段关注（最多10只）</h2>
-    <p class="control-note">“主力控盘”是基于20日成交额结构、趋势效率、区间位置和波动率的量价代理，不代表真实机构持仓；仅保留洗盘或开始拉升阶段，市场退潮、过热或数据滞后时自动降级为仅观察。</p>
+    <p class="control-note">“主力控盘/意图”是基于EMA12/36、5日OBV方向代理、量能、区间位置和20日成交额结构的公开日线代理，不代表真实机构订单或持仓；高位放量滞涨/负向OBV按派发风险剔除，市场退潮、过热或数据滞后时自动降级为仅观察。</p>
     <div class="table-responsive">
       <table id="leading-control-picks">
-        <thead><tr><th>股票</th><th>申万行业</th><th>阶段</th><th class="numeric">控盘分</th><th>推荐理由 / 失效条件</th></tr></thead>
+        <thead><tr><th>股票</th><th>申万行业</th><th>阶段 / 主力意图</th><th class="numeric">控盘分</th><th>意图依据 / 推荐理由 / 失效条件</th></tr></thead>
         <tbody>{control_table_rows}</tbody>
       </table>
     </div>
@@ -2077,6 +2191,9 @@ def build_feishu_payload(
     ]
     for index, item in enumerate(control_picks, 1):
         risk_note = f"；{item['risk_note']}" if item.get("risk_note") else ""
+        intent = item.get("main_force_intent") or item.get("stage") or "待确认"
+        confidence = item.get("intent_confidence") or "低"
+        intent_evidence = item.get("intent_evidence") or "量价证据不足"
         control_content.append(
             [
                 {
@@ -2085,6 +2202,8 @@ def build_feishu_payload(
                         f"{index}. {item['symbol']} {item['stock_name']}"
                         f"［{item['industry_name']}｜{item['stage']}｜"
                         f"{item.get('action_label', '次日关注')}］\n"
+                        f"主力意图：{intent}（{confidence}置信）\n"
+                        f"意图依据：{intent_evidence}\n"
                         f"理由：{item['reason']}\n"
                         f"失效：{item['invalidation']}{risk_note}"
                     ),
@@ -2111,7 +2230,10 @@ def build_feishu_payload(
         [
             {
                 "tag": "text",
-                "text": "候选需等待次日触发，禁止无条件追高；仅供研究，不构成投资建议。",
+                "text": (
+                    "主力控盘与意图均为公开日线量价代理，不代表真实机构订单或持仓；"
+                    "候选需等待次日触发，禁止无条件追高；仅供研究，不构成投资建议。"
+                ),
             }
         ],
     ]
