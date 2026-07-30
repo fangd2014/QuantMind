@@ -77,6 +77,31 @@ class ModelInferencePersistence:
             CREATE INDEX IF NOT EXISTS idx_qm_model_inference_settings_owner
               ON qm_model_inference_settings (tenant_id, user_id, model_id, updated_at DESC);
             """,
+            """
+            CREATE TABLE IF NOT EXISTS qm_model_inference_dispatch_logs (
+              id BIGSERIAL PRIMARY KEY,
+              trigger_source TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              user_id TEXT NOT NULL,
+              strategy_id TEXT,
+              model_id TEXT,
+              data_trade_date DATE,
+              prediction_trade_date DATE,
+              status TEXT NOT NULL,
+              reason_code TEXT,
+              reason_detail TEXT,
+              run_id TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_qm_inf_dispatch_owner_created
+              ON qm_model_inference_dispatch_logs (tenant_id, user_id, created_at DESC);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_qm_inf_dispatch_status_created
+              ON qm_model_inference_dispatch_logs (status, created_at DESC);
+            """,
         ]
         async with get_session() as session:
             for stmt in statements:
