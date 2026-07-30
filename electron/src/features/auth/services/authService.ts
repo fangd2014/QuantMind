@@ -15,7 +15,7 @@ import type {
 } from '../types/auth.types';
 import { handleError, handleAuthError, handleNetworkError, handleServerError } from '../utils/errorHandler';
 import { performanceMonitor } from '../utils/performance';
-import { SERVICE_ENDPOINTS } from '../../../config/services';
+import { SERVICE_ENDPOINTS, splitApiServiceUrl } from '../../../config/services';
 
 interface AuthRequestConfig extends AxiosRequestConfig {
   _skipAuthRefresh?: boolean;
@@ -80,19 +80,7 @@ class AuthService {
    * 规范化基础URL，分离域名和路径前缀
    */
   private normalizeBaseURL(url: string): { baseURL: string; apiPrefix: string } {
-    try {
-      const parsed = new URL(url);
-      let apiPrefix = parsed.pathname.replace(/\/$/, '');
-      if (apiPrefix === '/') apiPrefix = '';
-      parsed.pathname = '';
-      parsed.search = '';
-      parsed.hash = '';
-      let baseURL = parsed.toString();
-      if (baseURL.endsWith('/')) baseURL = baseURL.slice(0, -1);
-      return { baseURL, apiPrefix };
-    } catch {
-      return { baseURL: url.replace(/\/$/, ''), apiPrefix: '' };
-    }
+    return splitApiServiceUrl(url);
   }
 
   private getRuntimeBaseURL(): string {
