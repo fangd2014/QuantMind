@@ -28,7 +28,7 @@ Unified scripts directory for the QuantMind project, organized by functionality.
 - `scripts/pipeline/run_daily_fusion_pipeline.py`: Daily dual-model fusion pipeline.
 - `scripts/pipeline/run_engine_margin_topk_2024.py`: 调用 `quantmind-engine` 的 Qlib 回测接口，执行 2024 年固定两融股票池的多空 TopK 回测，并导出 `summary.json / equity_curve.csv / trades.csv`。
 - `scripts/analysis/concept_rotation_report.py`: 从本地 `stock_daily_latest` 计算申万 2021 版一级行业扩散度、RRG、龙头确认、次日条件候选，以及领先区内“控盘量价代理 + 洗盘/开始拉升”关注股（硬限制最多 10 只、单行业最多 2 只），输出 JSON/CSV/PDF/交互 HTML；行业分类和最新成分来自 Tushare 并带 7 日本地缓存。`--max-control-picks` 可调低数量但不会突破 10 只；该指标不代表真实机构持仓。
-- `scripts/analysis/ths_concept_rotation_report.py`: 复用申万日报的扩散度、RRG、龙头、控盘代理、洗盘/开始拉升和最多 10 只股票规则，仅将板块宇宙替换为 Tushare `ths_index/ths_member` 提供的同花顺 A 股概念板块；独立输出 JSON/CSV/PDF/交互 HTML，成分缓存 7 日。
+- `scripts/analysis/ths_concept_rotation_report.py`: 复用申万日报的扩散度、RRG、龙头、控盘代理、洗盘/开始拉升和最多 10 只股票规则，仅将板块宇宙替换为同花顺 A 股概念板块；成分数据优先读取 Tushare `ths_index/ths_member`，Token 无权限或接口异常时自动降级为同花顺公开概念页（不混用其他平台口径），独立输出 JSON/CSV/PDF/交互 HTML，成分缓存 7 日并可用旧缓存兜底。
 - `scripts/ops/run_concept_rotation_report.sh`: 从服务器 `.env` 安全读取 `WEB_HOOK`、从 `/root/.bashrc` 读取 `TUSHARE_TOKEN`，在 `quantmind` 容器内生成日报并推送飞书摘要、交互四象限和 PDF 下载链接。
 - `scripts/ops/run_ths_concept_rotation_report.sh`: 复用同一数据预检、Token 与飞书配置，单独生成并推送同花顺概念板块日报；如配置 `THS_CONCEPT_WEB_HOOK` 则优先使用，否则使用 `WEB_HOOK`。
 - `scripts/data/maintenance/concept_rotation_preflight.py`: 每次轮动日报前先执行 Baostock 增量更新，并校验应有交易日、截面完整度、最近 26 日、代码/OHLC/成交量与极端涨跌；发现阻断异常时对最近 35 个日历日做同源幂等回刷并复检，仍失败则阻断推荐并发送飞书告警。不会自动删行、猜测复权因子或用前值填充价格。

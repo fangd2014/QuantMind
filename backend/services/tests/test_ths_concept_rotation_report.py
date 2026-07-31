@@ -8,7 +8,11 @@ from scripts.analysis.concept_rotation_report import (
 )
 from scripts.analysis.ths_concept_rotation_report import (
     THS_REPORT_PROFILE,
+    THS_PUBLIC_DETAIL_URL,
+    THS_PUBLIC_INDEX_URL,
     load_ths_concept_universe,
+    parse_ths_public_concepts,
+    parse_ths_public_members,
 )
 
 
@@ -50,7 +54,7 @@ def test_load_ths_concept_universe_uses_a_share_concepts_and_cache(
     )
 
     assert len(boards) == 60
-    assert boards[0]["source"] == "THS"
+    assert boards[0]["source"] == "THS_TUSHARE"
     assert boards[0]["level"] == "concept"
     assert len(memberships[boards[0]["code"]]) == 8
     assert calls[0] == ("ths_index", {"exchange": "A", "type": "N"})
@@ -65,6 +69,102 @@ def test_load_ths_concept_universe_uses_a_share_concepts_and_cache(
 
     assert cached_boards == boards
     assert cached_memberships == memberships
+
+
+def _public_member_fixture(name_prefix: str = "成分股") -> bytes:
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{index}</td>
+          <td><a href="/stock/{600000 + index}/">{600000 + index}</a></td>
+          <td><a>{name_prefix}{index}</a></td>
+          <td>10.00</td>
+        </tr>
+        """
+        for index in range(1, 6)
+    )
+    return f"""
+    <html><head><meta charset="utf-8"></head><body>
+      <div class="body m-pager-box" id="maincont">
+        <table><tbody>{rows}</tbody></table>
+        <div class="m-pager"><a class="cur" page="1">1</a>
+          <span class="page_info">1/1</span></div>
+      </div>
+    </body></html>
+    """.encode()
+
+
+def test_parse_ths_public_pages() -> None:
+    index_html = """
+    <html><head><meta charset="utf-8"></head><body>
+      <a href="https://q.10jqka.com.cn/gn/detail/code/308614/">人工智能概念</a>
+      <a href="/gn/detail/code/309121/" target="_blank"><span>AI PC</span></a>
+      <a href="/not-a-concept/123">忽略</a>
+    </body></html>
+    """.encode()
+
+    concepts = parse_ths_public_concepts(index_html)
+    members, page_count = parse_ths_public_members(_public_member_fixture())
+
+    assert concepts == [
+        {
+            "code": "THS308614",
+            "route_code": "308614",
+            "name": "人工智能概念",
+            "level": "concept",
+            "source": "THS_PUBLIC",
+            "reported_count": 0,
+        },
+        {
+            "code": "THS309121",
+            "route_code": "309121",
+            "name": "AI PC",
+            "level": "concept",
+            "source": "THS_PUBLIC",
+            "reported_count": 0,
+        },
+    ]
+    assert page_count == 1
+    assert members[0] == {"symbol": "600001", "name": "成分股1"}
+    assert len(members) == 5
+
+
+def test_load_ths_concept_universe_falls_back_to_public_pages(
+    tmp_path: Path,
+) -> None:
+    index_html = (
+        "<html><head><meta charset='utf-8'></head><body>"
+        + "".join(
+            f"<a href='/gn/detail/code/{300000 + index}/'>公开概念{index}</a>"
+            for index in range(50)
+        )
+        + "</body></html>"
+    ).encode()
+    requested: list[str] = []
+
+    def denied_query(*_args, **_kwargs):
+        raise ValueError("没有接口(ths_index)访问权限")
+
+    def fake_http_get(url: str) -> bytes:
+        requested.append(url)
+        if url == THS_PUBLIC_INDEX_URL:
+            return index_html
+        assert url.startswith(THS_PUBLIC_DETAIL_URL.split("{")[0])
+        return _public_member_fixture()
+
+    boards, memberships = load_ths_concept_universe(
+        tmp_path,
+        cache_days=7,
+        query=denied_query,
+        public_http_get=fake_http_get,
+    )
+
+    assert len(boards) == 50
+    assert boards[0]["source"] == "THS_PUBLIC"
+    assert boards[0]["reported_count"] == 5
+    assert "route_code" not in boards[0]
+    assert len(memberships[boards[0]["code"]]) == 5
+    assert len(requested) == 51
 
 
 def test_ths_feishu_payload_is_a_separate_concept_message() -> None:
