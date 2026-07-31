@@ -35,6 +35,7 @@ Unified scripts directory for the QuantMind project, organized by functionality.
 - `scripts/ops/run_ths_concept_rotation_report.sh`: 复用同一数据预检、Token 与飞书配置，单独生成并推送同花顺概念板块日报；如配置 `THS_CONCEPT_WEB_HOOK` 则优先使用，否则使用 `WEB_HOOK`。
 - `scripts/ops/run_fan_market_potential_report.sh`: 10:00任务的独立运行器；先校验上一交易日数据并有限修复异常，再从 `.env` 读取 `FAN_MARKET_WEB_HOOK`（为空回退 `WEB_HOOK`）推送板块和股票关注池，同一数据日期默认不重复推送。
 - `scripts/data/maintenance/concept_rotation_preflight.py`: 每次轮动日报前先执行 Baostock 增量更新，并校验应有交易日、截面完整度、最近 26 日、代码/OHLC/成交量与极端涨跌；发现阻断异常时对最近 35 个日历日做同源幂等回刷并复检，仍失败则阻断推荐并发送飞书告警。不会自动删行、猜测复权因子或用前值填充价格。
+- `scripts/ops/run_daily_data_and_features.sh`: 每日同步优先使用 Baostock；若目标交易日已开市但 Baostock 尚未发布日线，则使用宿主机 `/root/.bashrc` 中的 `TUSHARE_TOKEN` 回退补齐 `stock_daily_latest` 和 Qlib。两种来源都没有目标日数据时任务会明确失败，不再以“日历已最新”静默跳过。
 - `scripts/analysis/leading_control_backtest.py`: 对“申万领先区 + 控盘量价代理 + 洗盘/开始拉升”执行最近 60 个完整自然月的点时回测。月末收盘出信号，次月首开买入、再下一月首开调仓；信号使用原始 OHLC，收益使用复权价格，历史申万成分按 `[in_date, out_date)` 过滤，沪深300为基准。正式运行若不是连续 60 月、任一月信号失败或缺年度快照会拒绝生成报告；输出 JSON、CSV、独立 HTML 和中文 PDF。
 - `scripts/ops/run_leading_control_backtest.sh`: 在服务器读取 `/root/.bashrc` 中既有的 `TUSHARE_TOKEN`，通过 `quantmind` 容器运行上述回测，并将报告写入 Nginx 已暴露的 `/data/uploads/reports/leading-control-backtest`。
 - `scripts/ops/install_concept_rotation_cron.sh`: 幂等安装每天 20:00 的申万行业轮动日报宿主机 cron 任务。
