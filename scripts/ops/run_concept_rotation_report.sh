@@ -5,6 +5,7 @@ PROJECT_DIR="${QUANTMIND_PROJECT_DIR:-/opt/quantmind}"
 CONTAINER="${QUANTMIND_CONTAINER:-quantmind}"
 ENV_FILE="${QUANTMIND_ENV_FILE:-${PROJECT_DIR}/.env}"
 BASHRC_PATH="${QUANTMIND_ROOT_BASHRC:-/root/.bashrc}"
+REPORT_SCRIPT="${QUANTMIND_ROTATION_REPORT_SCRIPT:-/app/scripts/analysis/concept_rotation_report.py}"
 
 if [[ ! -r "${ENV_FILE}" ]]; then
     echo "Environment file is not readable: ${ENV_FILE}" >&2
@@ -26,6 +27,16 @@ if [[ -z "${WEB_HOOK}" ]]; then
     echo "WEB_HOOK is empty or absent in ${ENV_FILE}" >&2
     exit 1
 fi
+
+THS_CONCEPT_WEB_HOOK="$(
+    sed -n -E \
+        's/^[[:space:]]*THS_CONCEPT_WEB_HOOK[[:space:]]*=[[:space:]]*(.*)$/\1/p' \
+        "${ENV_FILE}" | tail -n 1 | tr -d '\r'
+)"
+THS_CONCEPT_WEB_HOOK="${THS_CONCEPT_WEB_HOOK#\"}"
+THS_CONCEPT_WEB_HOOK="${THS_CONCEPT_WEB_HOOK%\"}"
+THS_CONCEPT_WEB_HOOK="${THS_CONCEPT_WEB_HOOK#\'}"
+THS_CONCEPT_WEB_HOOK="${THS_CONCEPT_WEB_HOOK%\'}"
 
 TOKEN_LINE="$(grep -m1 -E '^[[:space:]]*export[[:space:]]+TUSHARE_TOKEN=' "${BASHRC_PATH}" || true)"
 if [[ -z "${TOKEN_LINE}" ]]; then
@@ -51,6 +62,7 @@ PUBLIC_BASE_FROM_ENV="${PUBLIC_BASE_FROM_ENV#\'}"
 PUBLIC_BASE_FROM_ENV="${PUBLIC_BASE_FROM_ENV%\'}"
 
 export WEB_HOOK
+export THS_CONCEPT_WEB_HOOK
 export TUSHARE_TOKEN
 export CONCEPT_REPORT_PUBLIC_BASE_URL="${CONCEPT_REPORT_PUBLIC_BASE_URL:-${PUBLIC_BASE_FROM_ENV:-http://192.168.5.10:18000}}"
 DOCKER_BIN="$(command -v docker)"
@@ -63,8 +75,9 @@ DOCKER_BIN="$(command -v docker)"
 
 exec "${DOCKER_BIN}" exec \
     -e WEB_HOOK \
+    -e THS_CONCEPT_WEB_HOOK \
     -e TUSHARE_TOKEN \
     -e CONCEPT_REPORT_PUBLIC_BASE_URL \
     "${CONTAINER}" \
-    python /app/scripts/analysis/concept_rotation_report.py \
+    python "${REPORT_SCRIPT}" \
     --send-feishu "$@"

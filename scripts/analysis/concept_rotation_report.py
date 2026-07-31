@@ -41,6 +41,38 @@ DEFAULT_OUTPUT_DIR = "/data/uploads/reports/concept-rotation"
 DEFAULT_CACHE_DIR = "/data/cache/concept-rotation"
 DEFAULT_PUBLIC_BASE_URL = "http://192.168.5.10:18000"
 DEFAULT_PREFLIGHT_STATUS_FILE = "/data/cache/concept-rotation/preflight.json"
+DEFAULT_REPORT_PROFILE = {
+    "universe": "申万2021版一级行业",
+    "board_label": "申万行业",
+    "board_kind": "行业",
+    "quadrant_title": "申万一级行业 RRG 四象限",
+    "report_title": "申万行业轮动日报",
+    "report_heading": "QuantMind 申万行业轮动与次日候选",
+    "membership_note": (
+        "Tushare申万2021版一级行业及最新成分，使用7日缓存并做覆盖率校验"
+    ),
+    "membership_risk": (
+        "行业口径为Tushare申万2021版一级行业，最新成分应用于历史窗口，"
+        "可能存在成分调整带来的幸存者偏差。"
+    ),
+    "output_prefix": "concept_rotation",
+}
+
+
+def get_report_profile(report: dict[str, Any]) -> dict[str, str]:
+    profile = dict(DEFAULT_REPORT_PROFILE)
+    configured = report.get("report_profile") or {}
+    if isinstance(configured, dict):
+        profile.update(
+            {
+                str(key): str(value)
+                for key, value in configured.items()
+                if value is not None
+            }
+        )
+    if report.get("universe"):
+        profile["universe"] = str(report["universe"])
+    return profile
 
 
 def parse_args() -> argparse.Namespace:
@@ -611,10 +643,10 @@ def analyze_industries(
 
     result = pd.DataFrame(results)
     if result.empty:
-        raise RuntimeError("No SW industries passed the coverage and history checks")
+        raise RuntimeError("No boards passed the coverage and history checks")
     result = result[(result["member_count"] >= 8) & (result["coverage"] >= 0.60)]
     if len(result) < 4:
-        raise RuntimeError("Too few SW industries remain after validation")
+        raise RuntimeError("Too few boards remain after validation")
     result = result.copy()
     result["rs_ratio"] = 100 + 10 * zscore(result["ratio_raw"])
     result["rs_momentum"] = 100 + 10 * zscore(result["momentum_raw"])
@@ -852,7 +884,7 @@ def build_leading_control_picks(
     memberships: dict[str, set[str]],
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """Select explainable washout/breakout setups from leading SW industries.
+    """Select explainable washout/breakout setups from leading boards.
 
     ``control`` is deliberately a price/volume proxy. Public OHLCV data cannot
     identify the true positions of a particular class of market participant.
@@ -1104,6 +1136,7 @@ def build_report(
     max_buy: int = 5,
     max_watch: int = 10,
     max_control_picks: int = 10,
+    report_profile: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     prepared = prepare_stock_history(stock)
     boards, member_sets, market = analyze_industries(prepared, industries, memberships)
@@ -1219,9 +1252,13 @@ def build_report(
     focus = ranked[ranked["quadrant"].isin(["领先区", "改善区"])].copy()
     focus["quadrant_order"] = focus["quadrant"].map({"领先区": 0, "改善区": 1})
     focus = focus.sort_values(["quadrant_order", "score"], ascending=[True, False])
+    profile = dict(DEFAULT_REPORT_PROFILE)
+    if report_profile:
+        profile.update(report_profile)
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "universe": "申万2021版一级行业",
+        "universe": profile["universe"],
+        "report_profile": profile,
         "market": market,
         "top": _records(top, top_columns),
         "focus_industries": _records(focus, focus_columns),
@@ -1262,9 +1299,7 @@ def build_report(
                 "现有数据不含真实机构订单、CYW、筹码集中度和机构持仓变化，"
                 "不得据此宣称识别真实主力账户或持仓"
             ),
-            "membership": (
-                "Tushare申万2021版一级行业及最新成分，使用7日缓存并做覆盖率校验"
-            ),
+            "membership": profile["membership_note"],
         },
     }
     return report, boards
@@ -1280,7 +1315,7 @@ def _find_chinese_font() -> str | None:
     return next((path for path in candidates if Path(path).exists()), None)
 
 
-def _rrg_chart(plot: list[dict[str, Any]]) -> BytesIO:
+def _rrg_chart(plot: list[dict[str, Any]], title: str) -> BytesIO:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -1329,7 +1364,7 @@ def _rrg_chart(plot: list[dict[str, Any]]) -> BytesIO:
         )
     axis.set_xlabel("RS-Ratio（相对强度）", fontproperties=font)
     axis.set_ylabel("RS-Momentum（相对动量）", fontproperties=font)
-    axis.set_title("申万一级行业 RRG 四象限", fontproperties=font, fontsize=13)
+    axis.set_title(title, fontproperties=font, fontsize=13)
     legend = axis.legend(loc="best", fontsize=8)
     if font:
         for label in legend.get_texts():
@@ -1364,6 +1399,9 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
     )
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    profile = get_report_profile(report)
+    board_label = profile["board_label"]
+    board_kind = profile["board_kind"]
     font_path = _find_chinese_font()
     font_name = "QMChinese"
     try:
@@ -1465,7 +1503,11 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         canvas.saveState()
         canvas.setFont(font_name, 7)
         canvas.setFillColor(colors.HexColor("#697586"))
-        canvas.drawString(18 * mm, 10 * mm, "QuantMind 申万行业轮动日报 · 仅供研究")
+        canvas.drawString(
+            18 * mm,
+            10 * mm,
+            f"QuantMind {profile['report_title']} · 仅供研究",
+        )
         canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"第 {document.page} 页")
         canvas.restoreState()
 
@@ -1479,11 +1521,11 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=17 * mm,
-        title=f"QuantMind 申万行业轮动日报 {market['latest_date']}",
+        title=f"QuantMind {profile['report_title']} {market['latest_date']}",
         author="QuantMind",
     )
     story: list[Any] = [
-        Paragraph("QuantMind 申万行业轮动与次日候选", title_style),
+        Paragraph(profile["report_heading"], title_style),
         Paragraph(
             f"数据日期：{market['latest_date']}　市场状态：{market['regime']}　"
             f"生成时间：{report.get('generated_at', datetime.now().isoformat(timespec='minutes'))}",
@@ -1523,13 +1565,17 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
                 small_style,
             ),
             Paragraph("RRG 四象限", heading_style),
-            Image(_rrg_chart(report["plot"]), width=176 * mm, height=102 * mm),
+            Image(
+                _rrg_chart(report["plot"], profile["quadrant_title"]),
+                width=176 * mm,
+                height=102 * mm,
+            ),
             PageBreak(),
             Paragraph("领先区控盘阶段关注（最多10只）", heading_style),
         ]
     )
     control_rows = [
-        ["代码/名称", "申万行业", "阶段/主力意图", "控盘分", "推荐理由 / 失效条件"]
+        ["代码/名称", board_label, "阶段/主力意图", "控盘分", "推荐理由 / 失效条件"]
     ]
     for item in report.get("leading_control_picks", []):
         risk_note = item.get("risk_note")
@@ -1570,10 +1616,10 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
                 [29 * mm, 22 * mm, 20 * mm, 17 * mm, 85 * mm],
             ),
             PageBreak(),
-            Paragraph("领先区 / 改善区行业清单", heading_style),
+            Paragraph(f"领先区 / 改善区{board_kind}清单", heading_style),
         ]
     )
-    board_rows = [["申万行业", "区域", "得分", "扩散度", "5日变化", "板块龙头", "确认"]]
+    board_rows = [[board_label, "区域", "得分", "扩散度", "5日变化", "板块龙头", "确认"]]
     for item in report.get("focus_industries", []):
         board_rows.append(
             [
@@ -1596,7 +1642,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
         ]
     )
     buy_rows = [
-        ["代码/名称", "申万行业", "5/20日", "量比/换手", "收盘位", "次日触发与失效"]
+        ["代码/名称", board_label, "5/20日", "量比/换手", "收盘位", "次日触发与失效"]
     ]
     for item in report.get("buy_candidates", []):
         buy_rows.append(
@@ -1620,7 +1666,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
             Paragraph("观察池", heading_style),
         ]
     )
-    watch_rows = [["代码/名称", "申万行业", "5日", "量比", "收盘位", "尚未满足"]]
+    watch_rows = [["代码/名称", board_label, "5日", "量比", "收盘位", "尚未满足"]]
     for item in report.get("watchlist", []):
         watch_rows.append(
             [
@@ -1646,8 +1692,7 @@ def render_report_pdf(report: dict[str, Any], target: Path) -> None:
                     Paragraph("口径与风险提示", heading_style),
                     Paragraph(
                         "扩散度使用自由流通市值加权；RRG以全A加权组合为基准。"
-                        "行业口径为Tushare申万2021版一级行业，最新成分应用于历史窗口，"
-                        "可能存在成分调整带来的幸存者偏差。"
+                        f"{profile['membership_risk']}"
                         "候选仅代表量价条件满足，不代表次日一定上涨；次日必须等待触发条件，"
                         "禁止追高，并结合仓位、止损、流动性和公告风险独立决策。"
                         "本报告仅用于量化研究，不构成投资建议。",
@@ -1667,6 +1712,13 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     import plotly.io as pio
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    profile = get_report_profile(report)
+    board_label = escape(profile["board_label"])
+    board_kind = escape(profile["board_kind"])
+    quadrant_title = escape(profile["quadrant_title"])
+    universe = escape(profile["universe"])
+    report_title = escape(profile["report_title"])
+    membership_risk = escape(profile["membership_risk"])
     boards = sorted(
         report.get("plot", []),
         key=lambda item: float(item.get("score") or 0),
@@ -1907,7 +1959,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
             "</tr>"
         )
     focus_table_rows = "".join(focus_rows) or (
-        '<tr><td colspan="6" class="empty-row">当前没有位于领先区或改善区的行业</td></tr>'
+        f'<tr><td colspan="6" class="empty-row">当前没有位于领先区或改善区的{board_kind}</td></tr>'
     )
     control_rows: list[str] = []
     for item in report.get("leading_control_picks", []):
@@ -1945,8 +1997,8 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="QuantMind 申万一级行业 RRG 四象限日报">
-  <title>QuantMind 申万行业轮动 {report_date}</title>
+  <meta name="description" content="QuantMind {quadrant_title}日报">
+  <title>QuantMind {report_title} {report_date}</title>
   <style>
     :root {{ color-scheme: light dark; --bg:#f3f6f9; --surface:#fff; --text:#172235; --muted:#647085; --border:#dce3ea; --accent:#173a5e; --soft:#eaf0f5; }}
     * {{ box-sizing:border-box; }}
@@ -2010,14 +2062,14 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
 <main>
   <header>
     <div>
-      <h1>申万一级行业 RRG 四象限</h1>
-      <p class="subtitle">申万2021版一级行业 · 数据日期 {report_date} · 悬停查看指标，点击行业查看完整信息</p>
+      <h1>{quadrant_title}</h1>
+      <p class="subtitle">{universe} · 数据日期 {report_date} · 悬停查看指标，点击{board_kind}查看完整信息</p>
     </div>
     <div class="status">市场状态：<strong>{regime}</strong></div>
   </header>
-  <section class="toolbar" aria-label="行业筛选">
-    <label for="board-search">搜索申万行业</label>
-    <input id="board-search" type="search" placeholder="搜索行业名称或代码" autocomplete="off">
+  <section class="toolbar" aria-label="{board_kind}筛选">
+    <label for="board-search">搜索{board_label}</label>
+    <input id="board-search" type="search" placeholder="搜索{board_kind}名称或代码" autocomplete="off">
     <label for="quadrant-filter">筛选象限</label>
     <select id="quadrant-filter">
       <option value="">全部象限</option>
@@ -2030,7 +2082,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     <span id="visible-count" class="count" aria-live="polite"></span>
   </section>
   <div class="workspace">
-    <section class="panel chart-panel" aria-label="申万一级行业四象限散点图">
+    <section class="panel chart-panel" aria-label="{quadrant_title}散点图">
       {chart}
       <div class="legend" aria-label="象限图例">
         <span style="--dot:#16835d">领先区</span><span style="--dot:#ca8a04">改善区</span>
@@ -2038,7 +2090,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
       </div>
     </section>
     <aside id="board-detail" class="panel detail" aria-live="polite">
-      <div class="eyebrow" id="detail-quadrant">选择行业</div>
+      <div class="eyebrow" id="detail-quadrant">选择{board_kind}</div>
       <h2 id="detail-name">暂无数据</h2>
       <div id="detail-code" class="code">-</div>
       <dl>
@@ -2049,7 +2101,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
         <div class="metric"><dt>5日扩散变化</dt><dd id="detail-delta">-</dd></div>
         <div class="metric"><dt>成分覆盖</dt><dd id="detail-coverage">-</dd></div>
       </dl>
-      <div class="leader"><span class="meta">行业龙头</span><strong id="detail-leader">-</strong><span id="detail-confirmation" class="badge">待确认</span></div>
+      <div class="leader"><span class="meta">板块龙头</span><strong id="detail-leader">-</strong><span id="detail-confirmation" class="badge">待确认</span></div>
       <div id="detail-eligible" class="badge">未进入严格候选</div>
     </aside>
   </div>
@@ -2058,22 +2110,22 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     <p class="control-note">“主力控盘/意图”是基于EMA12/36、5日OBV方向代理、量能、区间位置和20日成交额结构的公开日线代理，不代表真实机构订单或持仓；高位放量滞涨/负向OBV按派发风险剔除，市场退潮、过热或数据滞后时自动降级为仅观察。</p>
     <div class="table-responsive">
       <table id="leading-control-picks">
-        <thead><tr><th>股票</th><th>申万行业</th><th>阶段 / 主力意图</th><th class="numeric">控盘分</th><th>意图依据 / 推荐理由 / 失效条件</th></tr></thead>
+        <thead><tr><th>股票</th><th>{board_label}</th><th>阶段 / 主力意图</th><th class="numeric">控盘分</th><th>意图依据 / 推荐理由 / 失效条件</th></tr></thead>
         <tbody>{control_table_rows}</tbody>
       </table>
     </div>
   </section>
   <section class="panel table-panel" aria-labelledby="industry-list-title">
-    <h2 id="industry-list-title">领先区 / 改善区行业清单</h2>
-    <p>按所在区域及综合得分排序；点击行业名称可同步查看上方详情。</p>
+    <h2 id="industry-list-title">领先区 / 改善区{board_kind}清单</h2>
+    <p>按所在区域及综合得分排序；点击{board_kind}名称可同步查看上方详情。</p>
     <div class="table-responsive">
       <table id="industry-list">
-        <thead><tr><th>申万行业</th><th>所在区域</th><th class="numeric">得分</th><th class="numeric">扩散度</th><th class="numeric">5日变化</th><th>板块龙头</th></tr></thead>
+        <thead><tr><th>{board_label}</th><th>所在区域</th><th class="numeric">得分</th><th class="numeric">扩散度</th><th class="numeric">5日变化</th><th>板块龙头</th></tr></thead>
         <tbody>{focus_table_rows}</tbody>
       </table>
     </div>
   </section>
-  <footer>点位大小代表综合得分；缩放可通过图表工具栏重置。行业口径为申万2021版一级行业，扩散度使用自由流通市值加权，RRG 以全 A 加权组合为基准。页面仅供量化研究，不构成投资建议。<br><span class="meta">生成时间：{generated_at or "-"}</span></footer>
+  <footer>点位大小代表综合得分；缩放可通过图表工具栏重置。{membership_risk}扩散度使用自由流通市值加权，RRG 以全 A 加权组合为基准。页面仅供量化研究，不构成投资建议。<br><span class="meta">生成时间：{generated_at or "-"}</span></footer>
 </main>
 <script>
   const allBoards = {embedded_data};
@@ -2115,7 +2167,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
       "marker.size": [filtered.map(item => 14 + Math.min(Math.max(value(item,"score"),0),100) * .32)],
       "marker.color": [filtered.map(item => quadrantColors[item.quadrant] || "#45627d")]
     }}, [0]);
-    count.textContent = `显示 ${{filtered.length}} / ${{allBoards.length}} 个行业`;
+    count.textContent = `显示 ${{filtered.length}} / ${{allBoards.length}} 个{board_kind}`;
     if (filtered.length) showDetail(filtered[0]);
     return filtered;
   }}
@@ -2131,7 +2183,7 @@ def render_interactive_html(report: dict[str, Any], target: Path) -> None:
     showDetail(allBoards.find(item => item.code === button.dataset.code));
     document.getElementById("board-detail").scrollIntoView({{behavior:"smooth",block:"center"}});
   }}));
-  count.textContent = `显示 ${{allBoards.length}} / ${{allBoards.length}} 个行业`;
+  count.textContent = `显示 ${{allBoards.length}} / ${{allBoards.length}} 个{board_kind}`;
   if (allBoards.length) showDetail(allBoards[0]);
 </script>
 </body>
@@ -2146,6 +2198,7 @@ def build_feishu_payload(
     report: dict[str, Any], pdf_url: str, html_url: str
 ) -> dict[str, Any]:
     market = report["market"]
+    profile = get_report_profile(report)
     preflight = report.get("data_preflight") or {}
     preflight_audit = preflight.get("final_audit") or {}
     preflight_warnings = preflight_audit.get("warnings") or []
@@ -2218,7 +2271,7 @@ def build_feishu_payload(
             }
         ],
         *([[{"tag": "text", "text": preflight_text}]] if preflight else []),
-        [{"tag": "text", "text": f"强势申万行业：{top}"}],
+        [{"tag": "text", "text": f"强势{profile['board_label']}：{top}"}],
         *control_content,
         [{"tag": "text", "text": f"次日条件候选：{buys}"}],
         [{"tag": "text", "text": f"观察池：{watches}"}],
@@ -2242,7 +2295,10 @@ def build_feishu_payload(
         "content": {
             "post": {
                 "zh_cn": {
-                    "title": f"QuantMind 申万行业轮动日报 {market['latest_date']}",
+                    "title": (
+                        f"QuantMind {profile['report_title']} "
+                        f"{market['latest_date']}"
+                    ),
                     "content": content,
                 }
             }
@@ -2297,10 +2353,11 @@ def write_outputs(
 ) -> tuple[Path, Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     date_token = str(report["market"]["latest_date"]).replace("-", "")
-    json_path = output_dir / f"concept_rotation_{date_token}.json"
-    csv_path = output_dir / f"concept_rotation_all_{date_token}.csv"
-    pdf_path = output_dir / f"concept_rotation_{date_token}.pdf"
-    html_path = output_dir / f"concept_rotation_{date_token}.html"
+    output_prefix = get_report_profile(report)["output_prefix"]
+    json_path = output_dir / f"{output_prefix}_{date_token}.json"
+    csv_path = output_dir / f"{output_prefix}_all_{date_token}.csv"
+    pdf_path = output_dir / f"{output_prefix}_{date_token}.pdf"
+    html_path = output_dir / f"{output_prefix}_{date_token}.html"
     latest_pdf_path = output_dir / "latest.pdf"
     latest_html_path = output_dir / "latest.html"
     json_path.write_text(
