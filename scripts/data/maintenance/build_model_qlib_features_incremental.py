@@ -110,6 +110,25 @@ def _available_stock_columns(connection) -> set[str]:
         return {str(row[0]) for row in cursor.fetchall()}
 
 
+def latest_stock_date(connection, *, not_after: date) -> pd.Timestamp:
+    """Return the latest source date that is safe for the default daily run."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT MAX(trade_date)
+            FROM stock_daily_latest
+            WHERE trade_date <= %s
+            """,
+            (not_after,),
+        )
+        value = cursor.fetchone()[0]
+    if value is None:
+        raise RuntimeError(
+            f"stock_daily_latest has no rows on or before {not_after.isoformat()}"
+        )
+    return pd.Timestamp(value).normalize()
+
+
 def load_stock_rows(
     connection,
     *,
@@ -596,19 +615,36 @@ def update_metadata_sidecar(
 def run(args: argparse.Namespace) -> dict[str, Any]:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     contract = load_contract(args.model_dir)
-    requested_end = pd.Timestamp(args.end_date or date.today().isoformat()).normalize()
+    source_last_date: pd.Timestamp | None = None
+    if args.end_date:
+        requested_end = pd.Timestamp(args.end_date).normalize()
+    else:
+        connection = database_connection()
+        try:
+            source_last_date = latest_stock_date(connection, not_after=date.today())
+        finally:
+            connection.close()
+        requested_end = source_last_date
+
     yearly_path = args.snapshot_dir / f"model_features_{requested_end.year}.parquet"
     if not yearly_path.exists():
         raise FileNotFoundError(yearly_path)
     existing_min, existing_max, existing_rows = parquet_date_range(yearly_path)
-    requested_start = pd.Timestamp(args.start_date).normalize() if args.start_date else existing_max + pd.Timedelta(days=1)
+    requested_start = (
+        pd.Timestamp(args.start_date).normalize()
+        if args.start_date
+        else existing_max + pd.Timedelta(days=1)
+    )
     if requested_start > requested_end:
-        return {
+        result = {
             "success": True,
             "skipped": True,
             "reason": "feature_parquet_already_current",
             "parquet_last_date": existing_max.strftime("%Y-%m-%d"),
         }
+        if source_last_date is not None:
+            result["source_last_date"] = source_last_date.strftime("%Y-%m-%d")
+        return result
 
     connection = database_connection()
     try:
