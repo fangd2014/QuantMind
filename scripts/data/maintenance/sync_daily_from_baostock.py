@@ -16,6 +16,9 @@ import math
 import os
 import shutil
 import sys
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -39,6 +42,7 @@ QLIB_FIELDS = (
     "change",
     "vwap",
 )
+TUSHARE_API_URL = "http://api.tushare.pro"
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,183 @@ def normalize_symbol(code: str) -> str | None:
     return None
 
 
+def normalize_tushare_symbol(code: str) -> str | None:
+    normalized = str(code or "").strip().upper()
+    if "." not in normalized:
+        return None
+    digits, market = normalized.split(".", 1)
+    if market not in {"SH", "SZ", "BJ"} or not digits.isdigit():
+        return None
+    return f"{market}{digits}"
+
+
+def query_tushare(
+    token: str,
+    api_name: str,
+    *,
+    params: dict[str, Any] | None = None,
+    fields: tuple[str, ...] = (),
+    retries: int = 4,
+) -> list[dict[str, Any]]:
+    """Query the raw Tushare HTTP API without adding a package dependency."""
+    payload = {
+        "api_name": api_name,
+        "token": token,
+        "params": params or {},
+        "fields": ",".join(fields),
+    }
+    body = json.dumps(payload).encode("utf-8")
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            request = urllib.request.Request(
+                TUSHARE_API_URL,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            code = int(result.get("code") or 0)
+            if code != 0:
+                message = str(result.get("msg") or f"Tushare error {code}")
+                if any(word in message for word in ("频率", "每分钟", "稍后")):
+                    raise RuntimeError(message)
+                raise ValueError(f"{api_name}: {message}")
+            data = result.get("data") or {}
+            names = list(data.get("fields") or [])
+            return [
+                dict(zip(names, item, strict=False))
+                for item in data.get("items") or []
+            ]
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            last_error = exc
+            if attempt + 1 >= retries:
+                break
+            time.sleep(2**attempt)
+    raise RuntimeError(f"{api_name} request failed: {last_error}")
+
+
+def _tushare_date(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if len(raw) != 8 or not raw.isdigit():
+        return None
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+
+
+def build_tushare_rows(
+    daily_rows: list[dict[str, Any]],
+    daily_basic_rows: list[dict[str, Any]],
+    stock_basic_rows: list[dict[str, Any]],
+    requested_date: str,
+    instruments: set[str],
+) -> dict[str, dict[str, DailyRow]]:
+    """Convert one Tushare trading-day snapshot to the shared row model."""
+    basics = {
+        (str(row.get("ts_code") or "").upper(), str(row.get("trade_date") or "")): row
+        for row in daily_basic_rows
+    }
+    names = {
+        str(row.get("ts_code") or "").upper(): str(row.get("name") or "")
+        for row in stock_basic_rows
+    }
+    result: dict[str, dict[str, DailyRow]] = {}
+    for item in daily_rows:
+        ts_code = str(item.get("ts_code") or "").strip().upper()
+        symbol = normalize_tushare_symbol(ts_code)
+        trade_date = _tushare_date(item.get("trade_date"))
+        if (
+            symbol is None
+            or symbol not in instruments
+            or trade_date != requested_date
+        ):
+            continue
+        raw_trade_date = str(item.get("trade_date") or "")
+        basic = basics.get((ts_code, raw_trade_date), {})
+        volume = _optional_float(item.get("vol"))
+        amount = _optional_float(item.get("amount"))
+        turnover = _optional_float(basic.get("turnover_rate"))
+        name = names.get(ts_code, "").upper()
+        result.setdefault(symbol, {})[trade_date] = DailyRow(
+            trade_date=trade_date,
+            symbol=symbol,
+            open=_optional_float(item.get("open")),
+            high=_optional_float(item.get("high")),
+            low=_optional_float(item.get("low")),
+            close=_optional_float(item.get("close")),
+            preclose=_optional_float(item.get("pre_close")),
+            volume=(volume * 100.0 if volume is not None else None),
+            amount=(amount * 1000.0 if amount is not None else None),
+            pct_change=_optional_float(item.get("pct_chg")),
+            turnover_rate=(turnover / 100.0 if turnover is not None else None),
+            pe_ttm=_optional_float(basic.get("pe_ttm")),
+            pb=_optional_float(basic.get("pb")),
+            is_st=1 if "ST" in name else 0,
+        )
+    return result
+
+
+def fetch_tushare_daily_rows(
+    token: str,
+    trade_dates: list[str],
+    instruments: set[str],
+) -> dict[str, dict[str, DailyRow]]:
+    stock_basic_rows = query_tushare(
+        token,
+        "stock_basic",
+        params={"list_status": "L"},
+        fields=("ts_code", "name"),
+    )
+    result: dict[str, dict[str, DailyRow]] = {}
+    for trade_date in trade_dates:
+        compact_date = trade_date.replace("-", "")
+        daily_rows = query_tushare(
+            token,
+            "daily",
+            params={"trade_date": compact_date},
+            fields=(
+                "ts_code",
+                "trade_date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "pre_close",
+                "pct_chg",
+                "vol",
+                "amount",
+            ),
+        )
+        if not daily_rows:
+            raise RuntimeError(f"Tushare daily has no rows for {trade_date}")
+        daily_basic_rows = query_tushare(
+            token,
+            "daily_basic",
+            params={"trade_date": compact_date},
+            fields=(
+                "ts_code",
+                "trade_date",
+                "turnover_rate",
+                "pe_ttm",
+                "pb",
+            ),
+        )
+        day_rows = build_tushare_rows(
+            daily_rows,
+            daily_basic_rows,
+            stock_basic_rows,
+            trade_date,
+            instruments,
+        )
+        if not day_rows:
+            raise RuntimeError(
+                f"Tushare daily has no matching A-share rows for {trade_date}"
+            )
+        for symbol, symbol_rows in day_rows.items():
+            result.setdefault(symbol, {}).update(symbol_rows)
+    return result
+
+
 def to_baostock_symbol(symbol: str) -> str | None:
     normalized = str(symbol or "").strip().upper()
     if normalized.startswith("SH"):
@@ -181,7 +362,7 @@ def _benchmark_has_data(bs: Any, trade_date: str) -> bool:
     return rs.error_code == "0" and rs.next() and bool(rs.get_row_data())
 
 
-def resolve_missing_dates(
+def resolve_new_trade_dates(
     bs: Any, existing_calendar: list[str], target_date: str
 ) -> list[str]:
     if not existing_calendar:
@@ -189,8 +370,31 @@ def resolve_missing_dates(
     start = (date.fromisoformat(existing_calendar[-1]) + timedelta(days=1)).isoformat()
     if start > target_date:
         return []
-    candidates = _query_trade_dates(bs, start, target_date)
+    return _query_trade_dates(bs, start, target_date)
+
+
+def resolve_missing_dates(
+    bs: Any, existing_calendar: list[str], target_date: str
+) -> list[str]:
+    candidates = resolve_new_trade_dates(bs, existing_calendar, target_date)
     return [candidate for candidate in candidates if _benchmark_has_data(bs, candidate)]
+
+
+def resolve_candidate_dates(
+    bs: Any,
+    existing_calendar: list[str],
+    target_date: str,
+    refresh_days: int = 0,
+) -> list[str]:
+    """Return open dates that must be sourced, before provider availability checks."""
+    requested = set(resolve_new_trade_dates(bs, existing_calendar, target_date))
+    if refresh_days > 0:
+        refresh_start = (
+            date.fromisoformat(target_date) - timedelta(days=refresh_days - 1)
+        ).isoformat()
+        refresh_start = max(refresh_start, existing_calendar[0])
+        requested.update(_query_trade_dates(bs, refresh_start, target_date))
+    return sorted(requested)
 
 
 def resolve_requested_dates(
@@ -521,7 +725,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"Baostock login failed: {login.error_code} {login.error_msg}"
         )
     try:
-        requested_dates = resolve_requested_dates(
+        requested_dates = resolve_candidate_dates(
             bs,
             existing_calendar,
             args.target_date,
@@ -536,35 +740,99 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "calendar_last_date": existing_calendar[-1],
             }
 
+        baostock_dates: list[str] = []
+        tushare_dates: list[str] = []
+        for trade_date in requested_dates:
+            if _benchmark_has_data(bs, trade_date):
+                baostock_dates.append(trade_date)
+            else:
+                tushare_dates.append(trade_date)
+
+        tushare_token = os.getenv("TUSHARE_TOKEN", "").strip()
+        if tushare_dates and not tushare_token:
+            joined_dates = ", ".join(tushare_dates)
+            raise RuntimeError(
+                "Baostock has no daily bars for open trading date(s) "
+                f"{joined_dates}; TUSHARE_TOKEN is required for fallback"
+            )
+
         rows_by_symbol: dict[str, dict[str, DailyRow]] = {}
         failures: list[dict[str, str]] = []
-        for index, symbol in enumerate(instruments, start=1):
-            try:
-                rows = fetch_symbol_rows(
-                    bs, symbol, requested_dates[0], requested_dates[-1]
+        if baostock_dates:
+            for index, symbol in enumerate(instruments, start=1):
+                try:
+                    rows = fetch_symbol_rows(
+                        bs, symbol, baostock_dates[0], baostock_dates[-1]
+                    )
+                    rows = {
+                        trade_date: row
+                        for trade_date, row in rows.items()
+                        if trade_date in baostock_dates
+                    }
+                    if rows:
+                        rows_by_symbol[symbol] = rows
+                except Exception as exc:
+                    failures.append({"symbol": symbol, "error": str(exc)[:200]})
+                if index % 250 == 0 or index == len(instruments):
+                    print(
+                        f"[PROGRESS] baostock {index}/{len(instruments)} "
+                        f"ok={len(rows_by_symbol)} failed={len(failures)}",
+                        flush=True,
+                    )
+
+            incomplete_baostock_dates = []
+            for trade_date in baostock_dates:
+                date_coverage = (
+                    sum(
+                        trade_date in rows
+                        for rows in rows_by_symbol.values()
+                    )
+                    / len(instruments)
+                    if instruments
+                    else 0.0
                 )
-                rows = {
-                    trade_date: row
-                    for trade_date, row in rows.items()
-                    if trade_date in requested_dates
-                }
-                if rows:
-                    rows_by_symbol[symbol] = rows
-                else:
-                    failures.append({"symbol": symbol, "error": "no rows"})
-            except Exception as exc:
-                failures.append({"symbol": symbol, "error": str(exc)[:200]})
-            if index % 250 == 0 or index == len(instruments):
-                print(
-                    f"[PROGRESS] {index}/{len(instruments)} "
-                    f"ok={len(rows_by_symbol)} failed={len(failures)}",
-                    flush=True,
+                if date_coverage < args.minimum_success_ratio:
+                    incomplete_baostock_dates.append(trade_date)
+            if incomplete_baostock_dates:
+                if not tushare_token:
+                    joined_dates = ", ".join(incomplete_baostock_dates)
+                    raise RuntimeError(
+                        "Baostock coverage is incomplete for open trading date(s) "
+                        f"{joined_dates}; TUSHARE_TOKEN is required for fallback"
+                    )
+                tushare_dates = sorted(
+                    set(tushare_dates).union(incomplete_baostock_dates)
                 )
 
-        success_ratio = len(rows_by_symbol) / len(instruments) if instruments else 0.0
+        if tushare_dates:
+            fallback_rows = fetch_tushare_daily_rows(
+                tushare_token,
+                tushare_dates,
+                set(instruments),
+            )
+            for symbol, symbol_rows in fallback_rows.items():
+                rows_by_symbol.setdefault(symbol, {}).update(symbol_rows)
+
+        complete_symbols = {
+            symbol
+            for symbol, rows in rows_by_symbol.items()
+            if all(trade_date in rows for trade_date in requested_dates)
+        }
+        for symbol in instruments:
+            missing = [
+                trade_date
+                for trade_date in requested_dates
+                if trade_date not in rows_by_symbol.get(symbol, {})
+            ]
+            if missing:
+                failures.append(
+                    {"symbol": symbol, "error": f"no rows for {', '.join(missing)}"}
+                )
+
+        success_ratio = len(complete_symbols) / len(instruments) if instruments else 0.0
         if success_ratio < args.minimum_success_ratio:
             raise RuntimeError(
-                f"Baostock coverage too low: {success_ratio:.2%} "
+                f"Market-data coverage too low: {success_ratio:.2%} "
                 f"<{args.minimum_success_ratio:.2%}"
             )
 
@@ -589,17 +857,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         if args.apply:
             invalidate_status_cache()
+        if baostock_dates and tushare_dates:
+            source = "baostock+tushare"
+        elif tushare_dates:
+            source = "tushare"
+        else:
+            source = "baostock"
         return {
             "success": True,
-            "source": "baostock",
+            "source": source,
             "apply": bool(args.apply),
             "date_start": requested_dates[0],
             "date_end": requested_dates[-1],
             "trading_days": len(requested_dates),
+            "baostock_dates": baostock_dates,
+            "tushare_dates": tushare_dates,
             "refresh_days": args.refresh_days,
             "instruments_total": len(instruments),
-            "instruments_ok": len(rows_by_symbol),
-            "instruments_failed": len(failures),
+            "instruments_ok": len(complete_symbols),
+            "instruments_failed": len(instruments) - len(complete_symbols),
             "success_ratio": round(success_ratio, 6),
             "database_rows": database_rows,
             "qlib": qlib_result,
