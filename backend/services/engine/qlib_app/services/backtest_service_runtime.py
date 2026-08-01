@@ -26,7 +26,10 @@ from backend.services.engine.qlib_app.services.market_state_service import (
     MarketStateService,
 )
 from backend.services.engine.qlib_app.services.risk_analyzer import RiskAnalyzer
-from backend.services.engine.qlib_app.services.strategy_builder import StrategyFactory
+from backend.services.engine.qlib_app.services.strategy_builder import (
+    SectorSignalPayload,
+    StrategyFactory,
+)
 from backend.services.engine.qlib_app.services.strategy_templates import (
     get_template_by_id,
 )
@@ -1032,6 +1035,9 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
     async def _build_signal_data(
         self, request: QlibBacktestRequest
     ) -> tuple[Any, dict[str, Any]]:
+        if request.strategy_type.strip().lower() == "sector_momentum_leader_core":
+            return await self._build_sector_momentum_signal_data(request)
+
         signal = self._normalize_signal_config(request.strategy_params.signal)
         if isinstance(signal, dict):
             # qlib 的可调用配置至少要有 class 或 func，module_path 不能单独作为合法信号配置。
@@ -1145,6 +1151,7 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                 "legacy_pred_path": resolved_path,
                 "signal_lag_days": int(getattr(request, "signal_lag_days", 1) or 0),
             }
+
         elif feature.endswith((".pkl", ".parquet")):
             resolved_path = self._resolve_path(feature)
             if resolved_path and os.path.exists(resolved_path):
@@ -1229,6 +1236,259 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                 "feature": feature,
                 "signal_lag_days": int(getattr(request, "signal_lag_days", 1) or 0),
             }
+
+    async def _build_sector_momentum_signal_data(
+        self, request: QlibBacktestRequest
+    ) -> tuple[SectorSignalPayload, dict[str, Any]]:
+        """Build raw close-of-day signals and align them once to execution dates."""
+        from sqlalchemy import text
+
+        from backend.services.engine.qlib_app.services.sector_momentum_leader_core import (
+            build_sector_signals,
+            load_sector_universe,
+        )
+        from backend.shared.database_manager_v2 import get_session
+
+        params = request.strategy_params.model_dump(exclude_none=True)
+        lookback_start = (
+            pd.Timestamp(request.start_date)
+            - pd.Timedelta(days=int(params["lookback_days"]) * 2 + 30)
+        ).date()
+        async with get_session(read_only=True) as session:
+            result = await session.execute(
+                text(
+                    "SELECT * FROM stock_daily_latest "
+                    "WHERE trade_date BETWEEN :start_date AND :end_date "
+                    "ORDER BY trade_date, symbol"
+                ),
+                {"start_date": lookback_start, "end_date": request.end_date},
+            )
+            stock_daily = pd.DataFrame(result.mappings().all())
+        if stock_daily.empty:
+            raise ValueError("stock_daily_latest 在回测及前置 lookback 区间内无可用数据")
+
+        cache_dir = Path(
+            os.getenv(
+                "SECTOR_MEMBERSHIP_CACHE_DIR",
+                str(Path(os.getenv("STORAGE_ROOT", "/data")) / "sector-memberships"),
+            )
+        )
+        universe = load_sector_universe(
+            params["board_universe"], cache_dir=cache_dir, strict=True
+        )
+        if isinstance(universe, tuple) and len(universe) >= 2:
+            boards, memberships = universe[:2]
+        else:
+            boards = getattr(universe, "boards", None)
+            memberships = getattr(universe, "memberships", None)
+        if boards is None or memberships is None:
+            raise ValueError("板块历史成员加载器未返回 boards/memberships")
+
+        built = build_sector_signals(
+            stock_daily,
+            boards,
+            memberships,
+            request.start_date,
+            request.end_date,
+            params=params,
+            strict=True,
+        )
+        raw_signals = built.signals
+        if not isinstance(raw_signals, pd.DataFrame) or "score" not in raw_signals.columns:
+            raise ValueError("板块策略信号必须是含 score 列的 DataFrame")
+        execution_dates = self._sector_execution_date_map(
+            raw_signals, built.board_states
+        )
+        aligned = self._align_sector_frame(raw_signals, execution_dates)
+        score = aligned[["score"]]
+        candidate_details = self._sector_frame_mapping(aligned, "instrument")
+        board_states = self._align_sector_board_states(built.board_states, execution_dates)
+        market_breadth_by_date = self._sector_market_breadth_by_execution_date(
+            stock_daily, execution_dates
+        )
+        raw_dates = pd.DatetimeIndex(execution_dates).sort_values()
+        execution_index = pd.DatetimeIndex(execution_dates.values()).sort_values()
+        core_metadata = self._sector_json_safe(
+            dict(getattr(built, "metadata", {}) or {})
+        )
+        diagnostics = list(core_metadata.pop("diagnostics", []) or [])
+        diagnostic_reason_counts: dict[str, int] = {}
+        for diagnostic in diagnostics:
+            reason = str(diagnostic.get("reason") or diagnostic.get("kind") or "unknown")
+            diagnostic_reason_counts[reason] = diagnostic_reason_counts.get(reason, 0) + 1
+        metadata = {
+            **core_metadata,
+            "source": "sector_momentum_leader_core",
+            "signal_lag_days": 1,
+            "raw_signal_date_min": str(raw_dates.min().date()),
+            "raw_signal_date_max": str(raw_dates.max().date()),
+            "execution_date_min": str(execution_index.min().date()),
+            "execution_date_max": str(execution_index.max().date()),
+            "rows_in_range": int(len(score)),
+            "market_breadth_by_date": market_breadth_by_date,
+            "diagnostic_count": len(diagnostics),
+            "diagnostic_reason_counts": diagnostic_reason_counts,
+            "diagnostics_sample": diagnostics[:100],
+        }
+        payload = SectorSignalPayload(
+            score=score,
+            candidate_details=candidate_details,
+            board_states=board_states,
+            metadata=metadata,
+        )
+        return payload, metadata
+
+    @staticmethod
+    def _sector_execution_date_map(
+        raw_signals: pd.DataFrame,
+        board_states: Any = None,
+    ) -> dict[pd.Timestamp, pd.Timestamp]:
+        dates: set[pd.Timestamp] = set()
+        if isinstance(raw_signals.index, pd.MultiIndex):
+            dates.update(
+                pd.to_datetime(raw_signals.index.get_level_values("datetime"))
+                .normalize()
+                .tolist()
+            )
+        if isinstance(board_states, dict):
+            dates.update(pd.Timestamp(value).normalize() for value in board_states)
+        elif isinstance(board_states, pd.DataFrame):
+            if isinstance(board_states.index, pd.MultiIndex):
+                values = board_states.index.get_level_values("datetime")
+            elif "datetime" in board_states.columns:
+                values = board_states["datetime"]
+            else:
+                values = []
+            dates.update(pd.to_datetime(values).normalize().tolist())
+        raw_dates = pd.DatetimeIndex(sorted(dates))
+        calendar = pd.DatetimeIndex(pd.to_datetime(D.calendar(freq="day"))).normalize()
+        mapping: dict[pd.Timestamp, pd.Timestamp] = {}
+        for raw_date in raw_dates:
+            position = int(calendar.searchsorted(raw_date, side="right"))
+            if position < len(calendar):
+                mapping[pd.Timestamp(raw_date)] = pd.Timestamp(calendar[position])
+        if not mapping:
+            raise ValueError("信号日之后不存在可用的下一交易日")
+        return mapping
+
+    @staticmethod
+    def _align_sector_frame(
+        frame: pd.DataFrame, execution_dates: dict[pd.Timestamp, pd.Timestamp]
+    ) -> pd.DataFrame:
+        dates = pd.to_datetime(frame.index.get_level_values("datetime")).normalize()
+        mapped = dates.map(execution_dates)
+        valid = ~pd.isna(mapped)
+        aligned = frame.loc[valid].copy()
+        aligned.index = pd.MultiIndex.from_arrays(
+            [
+                pd.DatetimeIndex(mapped[valid]),
+                aligned.index.get_level_values("instrument"),
+            ],
+            names=["datetime", "instrument"],
+        )
+        return aligned.sort_index()
+
+    @staticmethod
+    def _sector_frame_mapping(
+        frame: pd.DataFrame, entity_level: str
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        mapped: dict[str, dict[str, dict[str, Any]]] = {}
+        for index, row in frame.iterrows():
+            date_value = pd.Timestamp(index[frame.index.names.index("datetime")])
+            entity = str(index[frame.index.names.index(entity_level)])
+            mapped.setdefault(str(date_value.date()), {})[entity] = (
+                QlibBacktestServiceRuntimeMixin._sector_json_safe(row.to_dict())
+            )
+        return mapped
+
+    @staticmethod
+    def _sector_market_breadth_by_execution_date(
+        stock_daily: pd.DataFrame,
+        execution_dates: dict[pd.Timestamp, pd.Timestamp],
+    ) -> dict[str, float]:
+        frame = stock_daily.copy()
+        required = {"trade_date", "symbol", "close", "adj_factor"}
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise ValueError(f"市场广度计算缺少本地日线列: {missing}")
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.normalize()
+        if "adj_close" in frame and frame["adj_close"].notna().any():
+            frame["_adj_close"] = pd.to_numeric(frame["adj_close"], errors="coerce")
+        else:
+            frame["_adj_close"] = pd.to_numeric(frame["close"], errors="coerce") * pd.to_numeric(
+                frame["adj_factor"], errors="coerce"
+            )
+        frame = frame.sort_values(["symbol", "trade_date"], kind="stable")
+        frame["_ma20"] = frame.groupby("symbol")["_adj_close"].transform(
+            lambda values: values.rolling(20, min_periods=20).mean()
+        )
+        valid = frame.dropna(subset=["_adj_close", "_ma20"])
+        breadth = valid.assign(
+            _above=valid["_adj_close"] > valid["_ma20"]
+        ).groupby("trade_date")["_above"].mean()
+        output: dict[str, float] = {}
+        for signal_date, execution_date in execution_dates.items():
+            value = breadth.get(pd.Timestamp(signal_date))
+            if value is not None and np.isfinite(value):
+                output[str(pd.Timestamp(execution_date).date())] = float(value)
+        return output
+
+    @staticmethod
+    def _sector_json_safe(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): QlibBacktestServiceRuntimeMixin._sector_json_safe(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                QlibBacktestServiceRuntimeMixin._sector_json_safe(item)
+                for item in value
+            ]
+        if isinstance(value, (pd.Timestamp, datetime)):
+            return value.isoformat()
+        if isinstance(value, np.generic):
+            return value.item()
+        if not isinstance(value, (str, bytes)):
+            try:
+                missing = pd.isna(value)
+                if isinstance(missing, (bool, np.bool_)) and missing:
+                    return None
+            except (TypeError, ValueError):
+                pass
+        return value
+
+    @classmethod
+    def _align_sector_board_states(
+        cls,
+        board_states: Any,
+        execution_dates: dict[pd.Timestamp, pd.Timestamp],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        if isinstance(board_states, pd.DataFrame):
+            frame = board_states.copy()
+            if not isinstance(frame.index, pd.MultiIndex):
+                frame = frame.set_index(["datetime", "board_code"])
+            frame.index = frame.index.set_names(["datetime", "board_code"])
+            dates = pd.to_datetime(frame.index.get_level_values("datetime")).normalize()
+            mapped_dates = dates.map(execution_dates)
+            valid = ~pd.isna(mapped_dates)
+            frame = frame.loc[valid].copy()
+            frame.index = pd.MultiIndex.from_arrays(
+                [
+                    pd.DatetimeIndex(mapped_dates[valid]),
+                    frame.index.get_level_values("board_code"),
+                ],
+                names=["datetime", "board_code"],
+            )
+            return cls._sector_frame_mapping(frame.sort_index(), "board_code")
+        if not isinstance(board_states, dict):
+            raise ValueError("board_states 必须为 DataFrame 或按日期映射的 dict")
+        aligned: dict[str, dict[str, dict[str, Any]]] = {}
+        for raw_date, states in board_states.items():
+            execution_date = execution_dates.get(pd.Timestamp(raw_date).normalize())
+            if execution_date is not None:
+                aligned[str(execution_date.date())] = cls._sector_json_safe(states)
+        return aligned
 
     @staticmethod
     def _lag_signal_frame(

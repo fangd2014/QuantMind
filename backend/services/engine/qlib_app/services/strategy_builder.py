@@ -4,6 +4,7 @@ import ast
 import logging
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.services.engine.qlib_app.schemas.backtest import QlibBacktestRequest
@@ -24,7 +25,18 @@ _BUILTIN_CLASS_MODULE_MAP: dict[str, str] = {
     "RedisRiskGuardTopkStrategy": "backend.services.engine.qlib_app.utils.extended_strategies",
     "RedisFullAlphaStrategy": "backend.services.engine.qlib_app.utils.extended_strategies",
     "SimpleWeightStrategy": "backend.services.engine.qlib_app.utils.recording_strategy",
+    "RedisSectorMomentumLeaderCoreStrategy": "backend.services.engine.qlib_app.utils.extended_strategies",
 }
+
+
+@dataclass(frozen=True)
+class SectorSignalPayload:
+    """Execution-date aligned inputs for the dedicated sector strategy."""
+
+    score: Any
+    candidate_details: dict[str, dict[str, dict[str, Any]]]
+    board_states: dict[str, dict[str, dict[str, Any]]]
+    metadata: dict[str, Any]
 
 
 class StrategyBuilder(ABC):
@@ -825,6 +837,51 @@ class FullAlphaCrossSectionBuilder(StrategyBuilder):
         return self._sanitize_module_path_config(strategy)
 
 
+class SectorMomentumLeaderCoreBuilder(StrategyBuilder):
+    """Builder for the point-in-time sector momentum strategy."""
+
+    def build(
+        self,
+        request: QlibBacktestRequest,
+        market_state_kwargs: dict[str, Any],
+        signal_data: Any,
+        backtest_id: str,
+    ) -> dict[str, Any]:
+        if not isinstance(signal_data, SectorSignalPayload):
+            raise TypeError("sector_momentum_leader_core requires SectorSignalPayload")
+        params = self._strategy_params_to_dict(request)
+        kwargs = {
+            **params,
+            **market_state_kwargs,
+            **self._get_redis_config(backtest_id),
+            "signal": signal_data.score,
+            "candidate_details": signal_data.candidate_details,
+            "board_states": signal_data.board_states,
+            "signal_metadata": signal_data.metadata,
+            "topk": params["topk_stocks"],
+            "n_drop": params["topk_stocks"],
+            "only_tradable": True,
+        }
+        logger.info(
+            "build_sector_momentum_leader_core",
+            "Building dedicated sector momentum strategy",
+            topk=params.get("topk_stocks"),
+            max_holding_days=params.get("max_holding_days"),
+        )
+        config = self._sanitize_module_path_config(
+            {
+                "class": "RedisSectorMomentumLeaderCoreStrategy",
+                "module_path": "backend.services.engine.qlib_app.utils.extended_strategies",
+                "kwargs": kwargs,
+            }
+        )
+        # Execution diagnostics are appended by the live strategy and persisted
+        # from the original signal metadata after the backtest.  Preserve this
+        # shared sink instead of the recursive sanitizer's copied dict.
+        config["kwargs"]["signal_metadata"] = signal_data.metadata
+        return config
+
+
 class StrategyFactory:
     _builders = {
         # Native IDs
@@ -840,6 +897,7 @@ class StrategyFactory:
         "adaptive_drift": AdaptiveDriftBuilder(),
         "score_weighted": WeightStrategyBuilder(),
         "risk_guard_topk": RiskGuardTopkBuilder(),
+        "sector_momentum_leader_core": SectorMomentumLeaderCoreBuilder(),
         # Extended strategies
         "simple_topk": SimpleTopkBuilder(),
         "momentum": TopkDropoutBuilder(),
@@ -870,6 +928,7 @@ class StrategyFactory:
         "riskguardtopk": "risk_guard_topk",
         "volatilityweighted": "VolatilityWeighted",
         "momentum": "momentum",
+        "sector_momentum_leader_core": "sector_momentum_leader_core",
     }
 
     @classmethod
@@ -894,12 +953,7 @@ class StrategyFactory:
     def get_builder(cls, strategy_type: str) -> StrategyBuilder:
         builder, is_fallback, _normalized = cls.resolve_builder(strategy_type)
         if is_fallback:
-            # Fallback to TopkDropout if unknown to avoid crash
-            logger.warning(
-                "unknown_strategy_type_fallback",
-                "Unknown strategy type, falling back to TopkDropout",
-                strategy_type=strategy_type,
-            )
+            raise ValueError(f"Unknown strategy type: {strategy_type}")
         return builder
 
     @classmethod

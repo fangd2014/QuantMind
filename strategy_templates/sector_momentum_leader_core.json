@@ -1,0 +1,700 @@
+{
+  "id": "sector_momentum_leader_core",
+  "name": "板块动量轮动+龙头中军选股",
+  "description": "收盘后以点时历史成分计算热门板块；启动期选龙头、扩散期选中军，信号仅在下一交易日开盘执行。",
+  "category": "advanced",
+  "difficulty": "advanced",
+  "params": [
+    {
+      "name": "board_universe",
+      "label": "板块口径",
+      "description": "板块口径",
+      "default": "sw_l1",
+      "type": "select",
+      "options": [
+        "sw_l1",
+        "ths_concept"
+      ]
+    },
+    {
+      "name": "topk_sectors",
+      "label": "热门板块数量",
+      "description": "热门板块数量",
+      "default": 10,
+      "type": "number",
+      "min": 5,
+      "max": 20,
+      "step": 1
+    },
+    {
+      "name": "topk_stocks",
+      "label": "目标股票数量",
+      "description": "目标股票数量",
+      "default": 10,
+      "type": "number",
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    {
+      "name": "lookback_days",
+      "label": "回看交易日",
+      "description": "回看交易日",
+      "default": 80,
+      "type": "number",
+      "min": 40,
+      "max": 252,
+      "step": 1
+    },
+    {
+      "name": "min_board_members",
+      "label": "最少板块成员",
+      "description": "最少板块成员",
+      "default": 10,
+      "type": "number",
+      "min": 10,
+      "max": 30,
+      "step": 1
+    },
+    {
+      "name": "min_board_coverage",
+      "label": "最低板块覆盖率",
+      "description": "最低板块覆盖率",
+      "default": 0.6,
+      "type": "number",
+      "min": 0.4,
+      "max": 1,
+      "step": 0.05
+    },
+    {
+      "name": "max_holding_days",
+      "label": "最长持有交易日",
+      "description": "最长持有交易日",
+      "default": 10,
+      "type": "number",
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    {
+      "name": "rebalance_days",
+      "label": "调仓周期",
+      "description": "调仓周期",
+      "default": 1,
+      "type": "number",
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    {
+      "name": "max_stock_weight",
+      "label": "单票仓位上限",
+      "description": "单票仓位上限",
+      "default": 0.1,
+      "type": "number",
+      "min": 0.02,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "max_board_weight",
+      "label": "单板块仓位上限",
+      "description": "单板块仓位上限",
+      "default": 0.2,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.5,
+      "step": 0.05
+    },
+    {
+      "name": "weak_market_position",
+      "label": "弱市仓位上限",
+      "description": "弱市仓位上限",
+      "default": 0.5,
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    {
+      "name": "market_breadth_reduce",
+      "label": "降仓市场广度",
+      "description": "降仓市场广度",
+      "default": 0.4,
+      "type": "number",
+      "min": 0.2,
+      "max": 0.8,
+      "step": 0.05
+    },
+    {
+      "name": "market_breadth_pause",
+      "label": "暂停开仓市场广度",
+      "description": "暂停开仓市场广度",
+      "default": 0.3,
+      "type": "number",
+      "min": 0.1,
+      "max": 0.7,
+      "step": 0.05
+    },
+    {
+      "name": "crowding_warning_quantile",
+      "label": "拥挤警戒分位",
+      "description": "拥挤警戒分位",
+      "default": 0.9,
+      "type": "number",
+      "min": 0.7,
+      "max": 0.94,
+      "step": 0.01
+    },
+    {
+      "name": "crowding_overheat_quantile",
+      "label": "过热拥挤分位",
+      "description": "过热拥挤分位",
+      "default": 0.95,
+      "type": "number",
+      "min": 0.8,
+      "max": 0.99,
+      "step": 0.01
+    },
+    {
+      "name": "crowding_penalty_max",
+      "label": "最大拥挤扣分",
+      "description": "最大拥挤扣分",
+      "default": 15,
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "step": 1
+    },
+    {
+      "name": "launch_breadth_min",
+      "label": "启动广度下限",
+      "description": "启动广度下限",
+      "default": 0.3,
+      "type": "number",
+      "min": 0.1,
+      "max": 0.6,
+      "step": 0.05
+    },
+    {
+      "name": "launch_breadth_max",
+      "label": "启动广度上限",
+      "description": "启动广度上限",
+      "default": 0.6,
+      "type": "number",
+      "min": 0.3,
+      "max": 0.8,
+      "step": 0.05
+    },
+    {
+      "name": "launch_breadth_delta_min",
+      "label": "启动广度增量下限",
+      "description": "启动广度增量下限",
+      "default": 0.08,
+      "type": "number",
+      "min": 0,
+      "max": 0.3,
+      "step": 0.01
+    },
+    {
+      "name": "launch_limit_count_min",
+      "label": "启动涨停数下限",
+      "description": "启动涨停数下限",
+      "default": 1,
+      "type": "number",
+      "min": 0,
+      "max": 10,
+      "step": 1
+    },
+    {
+      "name": "launch_limit_count_max",
+      "label": "启动涨停数上限",
+      "description": "启动涨停数上限",
+      "default": 2,
+      "type": "number",
+      "min": 1,
+      "max": 15,
+      "step": 1
+    },
+    {
+      "name": "launch_limit_ratio_min",
+      "label": "启动涨停率下限",
+      "description": "启动涨停率下限",
+      "default": 0.01,
+      "type": "number",
+      "min": 0,
+      "max": 0.1,
+      "step": 0.005
+    },
+    {
+      "name": "launch_limit_ratio_max",
+      "label": "启动涨停率上限",
+      "description": "启动涨停率上限",
+      "default": 0.03,
+      "type": "number",
+      "min": 0.01,
+      "max": 0.2,
+      "step": 0.005
+    },
+    {
+      "name": "launch_amount_ratio_min",
+      "label": "启动成交额比下限",
+      "description": "启动成交额比下限",
+      "default": 1.15,
+      "type": "number",
+      "min": 0.5,
+      "max": 3,
+      "step": 0.05
+    },
+    {
+      "name": "launch_amount_ratio_max",
+      "label": "启动成交额比上限",
+      "description": "启动成交额比上限",
+      "default": 2.5,
+      "type": "number",
+      "min": 1,
+      "max": 5,
+      "step": 0.1
+    },
+    {
+      "name": "launch_relative_return_min",
+      "label": "启动相对收益下限",
+      "description": "启动相对收益下限",
+      "default": 0,
+      "type": "number",
+      "min": -0.1,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "launch_relative_return_max",
+      "label": "启动相对收益上限",
+      "description": "启动相对收益上限",
+      "default": 0.1,
+      "type": "number",
+      "min": 0.02,
+      "max": 0.3,
+      "step": 0.01
+    },
+    {
+      "name": "diffusion_breadth_min",
+      "label": "扩散广度下限",
+      "description": "扩散广度下限",
+      "default": 0.6,
+      "type": "number",
+      "min": 0.3,
+      "max": 0.9,
+      "step": 0.05
+    },
+    {
+      "name": "diffusion_limit_count_min",
+      "label": "扩散涨停数下限",
+      "description": "扩散涨停数下限",
+      "default": 3,
+      "type": "number",
+      "min": 1,
+      "max": 20,
+      "step": 1
+    },
+    {
+      "name": "diffusion_limit_ratio_min",
+      "label": "扩散涨停率下限",
+      "description": "扩散涨停率下限",
+      "default": 0.03,
+      "type": "number",
+      "min": 0,
+      "max": 0.2,
+      "step": 0.005
+    },
+    {
+      "name": "diffusion_amount_quantile_min",
+      "label": "扩散成交额分位下限",
+      "description": "扩散成交额分位下限",
+      "default": 0.7,
+      "type": "number",
+      "min": 0.4,
+      "max": 0.95,
+      "step": 0.05
+    },
+    {
+      "name": "core_start_amount_ratio_min",
+      "label": "中军启动量比下限",
+      "description": "中军启动量比下限",
+      "default": 1.2,
+      "type": "number",
+      "min": 0.8,
+      "max": 3,
+      "step": 0.05
+    },
+    {
+      "name": "overheat_breadth_min",
+      "label": "过热广度下限",
+      "description": "过热广度下限",
+      "default": 0.8,
+      "type": "number",
+      "min": 0.5,
+      "max": 1,
+      "step": 0.05
+    },
+    {
+      "name": "overheat_relative_return_min",
+      "label": "过热相对收益下限",
+      "description": "过热相对收益下限",
+      "default": 0.12,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.4,
+      "step": 0.01
+    },
+    {
+      "name": "retreat_breadth_max",
+      "label": "退潮广度上限",
+      "description": "退潮广度上限",
+      "default": 0.4,
+      "type": "number",
+      "min": 0.1,
+      "max": 0.7,
+      "step": 0.05
+    },
+    {
+      "name": "retreat_breadth_delta_max",
+      "label": "退潮广度增量上限",
+      "description": "退潮广度增量上限",
+      "default": -0.1,
+      "type": "number",
+      "min": -0.4,
+      "max": 0,
+      "step": 0.01
+    },
+    {
+      "name": "retreat_relative_return_max",
+      "label": "退潮相对收益上限",
+      "description": "退潮相对收益上限",
+      "default": -0.03,
+      "type": "number",
+      "min": -0.2,
+      "max": 0,
+      "step": 0.01
+    },
+    {
+      "name": "leader_float_mv_min",
+      "label": "龙头流通市值下限",
+      "description": "龙头流通市值下限",
+      "default": 5000000000,
+      "type": "number",
+      "min": 1000000000,
+      "max": 20000000000,
+      "step": 1000000000
+    },
+    {
+      "name": "leader_float_mv_max",
+      "label": "龙头流通市值上限",
+      "description": "龙头流通市值上限",
+      "default": 30000000000,
+      "type": "number",
+      "min": 10000000000,
+      "max": 100000000000,
+      "step": 5000000000
+    },
+    {
+      "name": "leader_amount_min",
+      "label": "龙头五日均额下限",
+      "description": "龙头五日均额下限",
+      "default": 300000000,
+      "type": "number",
+      "min": 50000000,
+      "max": 2000000000,
+      "step": 50000000
+    },
+    {
+      "name": "leader_turnover_min",
+      "label": "龙头换手率下限",
+      "description": "龙头换手率下限",
+      "default": 0.05,
+      "type": "number",
+      "min": 0,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "leader_turnover_max",
+      "label": "龙头换手率上限",
+      "description": "龙头换手率上限",
+      "default": 0.25,
+      "type": "number",
+      "min": 0.1,
+      "max": 0.6,
+      "step": 0.01
+    },
+    {
+      "name": "leader_rps_min",
+      "label": "龙头RPS下限",
+      "description": "龙头RPS下限",
+      "default": 0.85,
+      "type": "number",
+      "min": 0.5,
+      "max": 0.99,
+      "step": 0.01
+    },
+    {
+      "name": "leader_amount_ratio_min",
+      "label": "龙头量比下限",
+      "description": "龙头量比下限",
+      "default": 1.2,
+      "type": "number",
+      "min": 0.5,
+      "max": 3,
+      "step": 0.05
+    },
+    {
+      "name": "leader_amount_ratio_max",
+      "label": "龙头量比上限",
+      "description": "龙头量比上限",
+      "default": 3,
+      "type": "number",
+      "min": 1,
+      "max": 6,
+      "step": 0.1
+    },
+    {
+      "name": "leader_return_3d_min",
+      "label": "龙头三日收益下限",
+      "description": "龙头三日收益下限",
+      "default": 0.03,
+      "type": "number",
+      "min": -0.1,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "leader_return_3d_max",
+      "label": "龙头三日收益上限",
+      "description": "龙头三日收益上限",
+      "default": 0.25,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.6,
+      "step": 0.01
+    },
+    {
+      "name": "leader_upper_shadow_amount_ratio",
+      "label": "长上影放量阈值",
+      "description": "长上影放量阈值",
+      "default": 2,
+      "type": "number",
+      "min": 1,
+      "max": 5,
+      "step": 0.1
+    },
+    {
+      "name": "leader_upper_shadow_ratio",
+      "label": "长上影比例阈值",
+      "description": "长上影比例阈值",
+      "default": 0.5,
+      "type": "number",
+      "min": 0.2,
+      "max": 0.9,
+      "step": 0.05
+    },
+    {
+      "name": "core_float_mv_min",
+      "label": "中军流通市值下限",
+      "description": "中军流通市值下限",
+      "default": 10000000000,
+      "type": "number",
+      "min": 2000000000,
+      "max": 100000000000,
+      "step": 1000000000
+    },
+    {
+      "name": "core_mv_top_quantile",
+      "label": "中军市值头部分位",
+      "description": "中军市值头部分位",
+      "default": 0.2,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.5,
+      "step": 0.05
+    },
+    {
+      "name": "core_amount_min",
+      "label": "中军五日均额下限",
+      "description": "中军五日均额下限",
+      "default": 1000000000,
+      "type": "number",
+      "min": 100000000,
+      "max": 5000000000,
+      "step": 100000000
+    },
+    {
+      "name": "core_volatility_min",
+      "label": "中军波动率下限",
+      "description": "中军波动率下限",
+      "default": 0.25,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.5,
+      "step": 0.05
+    },
+    {
+      "name": "core_volatility_max",
+      "label": "中军波动率上限",
+      "description": "中军波动率上限",
+      "default": 0.5,
+      "type": "number",
+      "min": 0.2,
+      "max": 1,
+      "step": 0.05
+    },
+    {
+      "name": "core_drawdown_min",
+      "label": "中军回撤下限",
+      "description": "中军回撤下限",
+      "default": -0.12,
+      "type": "number",
+      "min": -0.5,
+      "max": -0.01,
+      "step": 0.01
+    },
+    {
+      "name": "core_amount_ratio_min",
+      "label": "中军量比下限",
+      "description": "中军量比下限",
+      "default": 1.1,
+      "type": "number",
+      "min": 0.5,
+      "max": 3,
+      "step": 0.05
+    },
+    {
+      "name": "core_amount_ratio_max",
+      "label": "中军量比上限",
+      "description": "中军量比上限",
+      "default": 2.5,
+      "type": "number",
+      "min": 1,
+      "max": 6,
+      "step": 0.1
+    },
+    {
+      "name": "core_return_5d_max",
+      "label": "中军五日收益上限",
+      "description": "中军五日收益上限",
+      "default": 0.2,
+      "type": "number",
+      "min": 0.05,
+      "max": 0.6,
+      "step": 0.01
+    },
+    {
+      "name": "leader_gap_down",
+      "label": "龙头低开下限",
+      "description": "龙头低开下限",
+      "default": -0.03,
+      "type": "number",
+      "min": -0.15,
+      "max": 0,
+      "step": 0.01
+    },
+    {
+      "name": "leader_gap_up",
+      "label": "龙头高开上限",
+      "description": "龙头高开上限",
+      "default": 0.05,
+      "type": "number",
+      "min": 0,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "core_gap_down",
+      "label": "中军低开下限",
+      "description": "中军低开下限",
+      "default": -0.02,
+      "type": "number",
+      "min": -0.15,
+      "max": 0,
+      "step": 0.01
+    },
+    {
+      "name": "core_gap_up",
+      "label": "中军高开上限",
+      "description": "中军高开上限",
+      "default": 0.03,
+      "type": "number",
+      "min": 0,
+      "max": 0.15,
+      "step": 0.01
+    },
+    {
+      "name": "stop_loss",
+      "label": "收盘止损线",
+      "description": "收盘止损线",
+      "default": -0.03,
+      "type": "number",
+      "min": -0.2,
+      "max": -0.01,
+      "step": 0.01
+    },
+    {
+      "name": "leader_trailing_stop",
+      "label": "龙头移动止盈回撤",
+      "description": "龙头移动止盈回撤",
+      "default": 0.06,
+      "type": "number",
+      "min": 0.02,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "core_trailing_stop",
+      "label": "中军移动止盈回撤",
+      "description": "中军移动止盈回撤",
+      "default": 0.05,
+      "type": "number",
+      "min": 0.02,
+      "max": 0.2,
+      "step": 0.01
+    },
+    {
+      "name": "board_exit_rank",
+      "label": "板块退出排名",
+      "description": "板块退出排名",
+      "default": 20,
+      "type": "number",
+      "min": 10,
+      "max": 50,
+      "step": 1
+    },
+    {
+      "name": "board_exit_days",
+      "label": "板块掉队天数",
+      "description": "板块掉队天数",
+      "default": 2,
+      "type": "number",
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    {
+      "name": "board_score_drop_exit",
+      "label": "板块分数下降退出",
+      "description": "板块分数下降退出",
+      "default": 20,
+      "type": "number",
+      "min": 5,
+      "max": 50,
+      "step": 1
+    }
+  ],
+  "execution_defaults": {
+    "deal_price": "open",
+    "signal_lag_days": 1
+  },
+  "live_defaults": {},
+  "live_config_tips": [
+    "仅使用本地 stock_daily_latest 与具备生效区间的历史板块成分。",
+    "同花顺概念目录层面可能存在幸存者偏差。",
+    "策略主动持仓最长 10 个交易日。"
+  ]
+}

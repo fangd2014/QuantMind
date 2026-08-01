@@ -22,6 +22,7 @@ from backend.services.engine.qlib_app.schemas.backtest import (
     DeepTimeSeriesParams,
     AdaptiveDriftParams,
     CustomStrategyParams,
+    SectorMomentumLeaderCoreParams,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "DeepTimeSeriesParams",
     "AdaptiveDriftParams",
     "CustomStrategyParams",
+    "SectorMomentumLeaderCoreParams",
     "QlibPortfolioMetrics",
     "HealthCheckResponse",
     "OptimizationTaskResponse",

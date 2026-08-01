@@ -185,10 +185,11 @@ class QlibBacktestService(QlibBacktestServiceRuntimeMixin):
 
         task_logger.warning(
             "strategy_template_not_found",
-            "Unknown strategy_type not found in template directory, keep TopkDropout fallback",
+            "Unknown strategy_type not found in built-ins, aliases, templates "
+            "or custom code",
             strategy_type=normalized,
         )
-        return builder
+        raise ValueError(f"Unknown strategy_type: {normalized}")
 
     def _build_strategy_from_content(self, content: str):
         """

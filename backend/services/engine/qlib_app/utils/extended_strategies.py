@@ -1140,6 +1140,623 @@ class RedisSectorRotationStrategy(DynamicRiskMixin, TopkDropoutStrategy, RedisLo
             return None
 
 
+class RedisSectorMomentumLeaderCoreStrategy(
+    DynamicRiskMixin, TopkDropoutStrategy, RedisLoggerMixin
+):
+    """Dedicated stateful execution strategy for sector momentum signals."""
+
+    def __init__(self, *args, **kwargs):
+        self.init_redis(kwargs)
+        self.init_dynamic_risk(kwargs)
+        self.candidate_details = kwargs.pop("candidate_details", {})
+        self.board_states = kwargs.pop("board_states", {})
+        self.signal_metadata = kwargs.pop("signal_metadata", {})
+        self.max_holding_days = int(kwargs.pop("max_holding_days", 10))
+        self.rebalance_days = int(kwargs.pop("rebalance_days", 1))
+        self.board_exit_rank = int(kwargs.pop("board_exit_rank", 20))
+        self.board_exit_days = int(kwargs.pop("board_exit_days", 2))
+        self.board_score_drop_exit = float(kwargs.pop("board_score_drop_exit", 20))
+        self.leader_gap_down = float(kwargs.pop("leader_gap_down", -0.03))
+        self.leader_gap_up = float(kwargs.pop("leader_gap_up", 0.05))
+        self.core_gap_down = float(kwargs.pop("core_gap_down", -0.02))
+        self.core_gap_up = float(kwargs.pop("core_gap_up", 0.03))
+        self.stop_loss = float(kwargs.pop("stop_loss", -0.03))
+        self.leader_trailing_stop = float(kwargs.pop("leader_trailing_stop", 0.06))
+        self.core_trailing_stop = float(kwargs.pop("core_trailing_stop", 0.05))
+        self.max_stock_weight = float(kwargs.pop("max_stock_weight", 0.10))
+        self.max_board_weight = float(kwargs.pop("max_board_weight", 0.20))
+        self.weak_market_position = float(kwargs.pop("weak_market_position", 0.50))
+        self.market_breadth_reduce = float(kwargs.pop("market_breadth_reduce", 0.40))
+        self.market_breadth_pause = float(kwargs.pop("market_breadth_pause", 0.30))
+        self._entry_trade_step: dict[str, int] = {}
+        self._position_context: dict[str, dict[str, Any]] = {}
+        self._board_rank_breach_days: dict[str, int] = defaultdict(int)
+        self._forced_exit_blocked: dict[str, dict[str, Any]] = {}
+        self._trade_step_by_date: dict[str, int] = {}
+        self.execution_diagnostics = self.signal_metadata.setdefault(
+            "execution_diagnostics", []
+        )
+
+        kwargs = _resolve_signal_kwarg(kwargs)
+        sector_only = {
+            "board_universe", "topk_sectors", "topk_stocks", "lookback_days",
+            "min_board_members", "min_board_coverage", "crowding_warning_quantile",
+            "crowding_overheat_quantile", "crowding_penalty_max",
+            "launch_breadth_min", "launch_breadth_max", "launch_breadth_delta_min",
+            "launch_limit_count_min", "launch_limit_count_max",
+            "launch_limit_ratio_min", "launch_limit_ratio_max",
+            "launch_amount_ratio_min", "launch_amount_ratio_max",
+            "launch_relative_return_min", "launch_relative_return_max",
+            "diffusion_breadth_min", "diffusion_limit_count_min",
+            "diffusion_limit_ratio_min", "diffusion_amount_quantile_min",
+            "core_start_amount_ratio_min", "overheat_breadth_min",
+            "overheat_relative_return_min", "retreat_breadth_max",
+            "retreat_breadth_delta_max", "retreat_relative_return_max",
+            "leader_float_mv_min", "leader_float_mv_max", "leader_amount_min",
+            "leader_turnover_min", "leader_turnover_max", "leader_rps_min",
+            "leader_amount_ratio_min", "leader_amount_ratio_max",
+            "leader_return_3d_min", "leader_return_3d_max",
+            "leader_upper_shadow_amount_ratio", "leader_upper_shadow_ratio",
+            "core_float_mv_min", "core_mv_top_quantile", "core_amount_min",
+            "core_volatility_min", "core_volatility_max", "core_drawdown_min",
+            "core_amount_ratio_min", "core_amount_ratio_max", "core_return_5d_max",
+        }
+        for key in sector_only | _OUR_KWARGS:
+            kwargs.pop(key, None)
+        kwargs.setdefault("only_tradable", True)
+        super().__init__(*args, **kwargs)
+
+    def reset(self, *args, **kwargs):
+        self._entry_trade_step.clear()
+        self._position_context.clear()
+        self._board_rank_breach_days.clear()
+        self._forced_exit_blocked.clear()
+        self._trade_step_by_date.clear()
+        self.execution_diagnostics.clear()
+        self.reset_dynamic_risk()
+        try:
+            return super().reset(*args, **kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return super().reset()
+
+    @staticmethod
+    def _date_key(value: Any) -> str:
+        return str(pd.Timestamp(value).date())
+
+    def _current_trade_context(self) -> tuple[int, Any, Any, str]:
+        trade_step = int(self.trade_calendar.get_trade_step())
+        start_time, end_time = self.trade_calendar.get_step_time(trade_step)
+        return trade_step, start_time, end_time, self._date_key(start_time)
+
+    def _append_execution_diagnostic(self, event: str, **values: Any) -> None:
+        record = {"event": event, **values}
+        if self.execution_diagnostics and self.execution_diagnostics[-1] == record:
+            return
+        self.execution_diagnostics.append(record)
+        if len(self.execution_diagnostics) > 500:
+            del self.execution_diagnostics[:-500]
+
+    def _record_fills(self, execute_result: Any, trade_step: int | None = None) -> None:
+        if not execute_result:
+            return
+        for item in execute_result:
+            if not isinstance(item, tuple) or not item:
+                continue
+            order = item[0]
+            if float(getattr(order, "deal_amount", 0) or 0) <= 0:
+                continue
+            stock = str(order.stock_id)
+            order_date = self._date_key(getattr(order, "start_time", ""))
+            actual_trade_step = self._trade_step_by_date.get(order_date, trade_step)
+            if actual_trade_step is None:
+                continue
+            if order.direction == OrderDir.BUY:
+                self._entry_trade_step.setdefault(stock, actual_trade_step)
+                detail = self.candidate_details.get(
+                    order_date, {}
+                ).get(stock, {})
+                if stock not in self._position_context:
+                    trade_price = item[3] if len(item) > 3 else None
+                    self._position_context[stock] = {
+                        "board_code": detail.get("board_code"),
+                        "entry_board_score": detail.get("board_score"),
+                        "role": detail.get("role"),
+                        "signal_date": detail.get("signal_date"),
+                        "entry_price": float(trade_price)
+                        if trade_price is not None
+                        else None,
+                        "highest_close": float(trade_price)
+                        if trade_price is not None
+                        else None,
+                        "below_ma5_days": 0,
+                    }
+            elif order.direction == OrderDir.SELL:
+                try:
+                    amount = float(self.trade_position.get_stock_amount(stock))
+                except Exception as exc:
+                    self._append_execution_diagnostic(
+                        "position_amount_read_failed",
+                        date=order_date,
+                        stock=stock,
+                        error_type=type(exc).__name__,
+                    )
+                    StructuredTaskLogger(
+                        logger,
+                        "redis-sector-momentum-leader-core",
+                        {"backtest_id": getattr(self, "backtest_id", None)},
+                    ).warning(
+                        "position_amount_read_failed",
+                        "卖出成交后读取剩余持仓失败，保留持仓跟踪状态",
+                        stock=stock,
+                        error=exc,
+                    )
+                    continue
+                if amount > 0:
+                    continue
+                blocked = self._forced_exit_blocked.get(stock)
+                if blocked:
+                    self._append_execution_diagnostic(
+                        "forced_exit_completed",
+                        date=order_date,
+                        stock=stock,
+                        reason=blocked["reason"],
+                        retries=blocked["retries"],
+                    )
+                self._entry_trade_step.pop(stock, None)
+                self._position_context.pop(stock, None)
+                self._board_rank_breach_days.pop(stock, None)
+                self._forced_exit_blocked.pop(stock, None)
+
+    def _board_exit_reason(self, stock: str, date_key: str) -> str | None:
+        context = self._position_context.get(stock, {})
+        board_code = context.get("board_code")
+        state = self.board_states.get(date_key, {}).get(str(board_code), {})
+        if not state or state.get("evaluable") is False:
+            return None
+        phase = state.get("phase")
+        if phase in {"retreat", "overheated"}:
+            return f"board_phase_{phase}"
+        if context.get("role") == "leader" and phase == "diffusion":
+            return "leader_to_diffusion"
+        rank = state.get("rank")
+        if rank is not None and float(rank) > self.board_exit_rank:
+            self._board_rank_breach_days[stock] += 1
+        else:
+            self._board_rank_breach_days[stock] = 0
+        if self._board_rank_breach_days[stock] >= self.board_exit_days:
+            return "board_rank_exit"
+        current_score = state.get("board_score", state.get("score"))
+        entry_score = context.get("entry_board_score")
+        if current_score is not None and entry_score is not None:
+            if float(entry_score) - float(current_score) >= self.board_score_drop_exit:
+                return "board_score_drop"
+        return None
+
+    def _stock_exit_reason(
+        self, stock: str, snapshot: dict[str, dict[str, float]]
+    ) -> str | None:
+        values = snapshot.get(stock, {})
+        close = values.get("close")
+        ma5 = values.get("ma5")
+        ma20 = values.get("ma20")
+        context = self._position_context.get(stock, {})
+        if close is None or not np.isfinite(close) or close <= 0:
+            return None
+        highest = context.get("highest_close")
+        highest = max(float(highest or close), float(close))
+        context["highest_close"] = highest
+        entry_price = context.get("entry_price")
+        if entry_price and float(close) / float(entry_price) - 1 <= self.stop_loss:
+            return "stop_loss"
+        trailing_stop = (
+            self.leader_trailing_stop
+            if context.get("role") == "leader"
+            else self.core_trailing_stop
+        )
+        if highest > 0 and (highest - float(close)) / highest >= trailing_stop:
+            return "trailing_stop"
+        if ma20 is not None and np.isfinite(ma20) and float(close) < float(ma20):
+            return "trend_below_ma20"
+        if ma5 is not None and np.isfinite(ma5) and float(close) < float(ma5):
+            context["below_ma5_days"] = int(context.get("below_ma5_days", 0)) + 1
+        else:
+            context["below_ma5_days"] = 0
+        if context["below_ma5_days"] >= 2:
+            return "trend_below_ma5_twice"
+        return None
+
+    def _forced_exit_reasons(
+        self,
+        trade_step: int,
+        date_key: str,
+        snapshot: dict[str, dict[str, float]] | None = None,
+    ) -> dict[str, str]:
+        reasons: dict[str, str] = {}
+        stocks = getattr(self, "trade_position", None)
+        stocks = stocks.get_stock_list() if stocks is not None else []
+        for stock in stocks:
+            stock = str(stock)
+            blocked = self._forced_exit_blocked.get(stock)
+            if blocked:
+                reasons[stock] = str(blocked["reason"])
+                continue
+            entry_step = self._entry_trade_step.get(stock)
+            if (
+                entry_step is not None
+                and trade_step - entry_step >= self.max_holding_days
+            ):
+                reasons[stock] = "max_holding_days"
+                continue
+            stock_reason = self._stock_exit_reason(stock, snapshot or {})
+            if stock_reason:
+                reasons[stock] = stock_reason
+                continue
+            board_reason = self._board_exit_reason(stock, date_key)
+            if board_reason:
+                reasons[stock] = board_reason
+        return reasons
+
+    def _passes_gap_filter(
+        self,
+        order: Order,
+        date_key: str,
+        start_time: Any,
+        end_time: Any,
+        snapshot: dict[str, dict[str, float]],
+    ) -> bool:
+        detail = self.candidate_details.get(date_key, {}).get(str(order.stock_id), {})
+        previous_close = snapshot.get(str(order.stock_id), {}).get("close")
+        try:
+            open_price = float(
+                self._execution_open_price(str(order.stock_id), start_time, end_time)
+            )
+            previous_close = float(previous_close)
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(open_price) or not np.isfinite(previous_close):
+            return False
+        if open_price <= 0 or previous_close <= 0:
+            return False
+        gap = open_price / previous_close - 1
+        role = detail.get("role")
+        lower, upper = (
+            (self.leader_gap_down, self.leader_gap_up)
+            if role == "leader"
+            else (self.core_gap_down, self.core_gap_up)
+        )
+        return lower <= float(gap) <= upper
+
+    def _execution_open_price(
+        self, stock: str, start_time: Any, end_time: Any
+    ) -> float | None:
+        exchange = self.trade_exchange
+        quote = getattr(exchange, "quote", None)
+        field = getattr(exchange, "buy_price", "$open")
+        if quote is not None and hasattr(quote, "get_data"):
+            value = quote.get_data(
+                stock, start_time, end_time, field=field, method="ts_data_last"
+            )
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) and value > 0 else None
+        return exchange.get_deal_price(
+            stock_id=stock,
+            start_time=start_time,
+            end_time=end_time,
+            direction=OrderDir.BUY,
+        )
+
+    def _load_prior_close_snapshot(
+        self, stocks: list[str], trade_date: Any
+    ) -> dict[str, dict[str, float]]:
+        if not stocks:
+            return {}
+        end_date = pd.Timestamp(trade_date).normalize() - pd.Timedelta(days=1)
+        start_date = end_date - pd.Timedelta(days=60)
+        fields = ["$close", "Mean($close,5)", "Mean($close,20)"]
+        try:
+            frame = D.features(
+                stocks,
+                fields,
+                start_time=str(start_date.date()),
+                end_time=str(end_date.date()),
+            )
+        except Exception as exc:
+            StructuredTaskLogger(
+                logger,
+                "redis-sector-momentum-leader-core",
+                {"backtest_id": getattr(self, "backtest_id", None)},
+            ).warning("prior_snapshot_failed", "前一交易日行情读取失败", error=exc)
+            return {}
+        if frame is None or frame.empty:
+            return {}
+        snapshot: dict[str, dict[str, float]] = {}
+        for stock in stocks:
+            try:
+                rows = frame.xs(stock, level="instrument").sort_index()
+                row = rows.iloc[-1]
+                snapshot[stock] = {
+                    "close": float(row[fields[0]]),
+                    "ma5": float(row[fields[1]]),
+                    "ma20": float(row[fields[2]]),
+                }
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        return snapshot
+
+    def _market_position_limit(self, date_key: str) -> float:
+        breadth = self.signal_metadata.get("market_breadth_by_date", {}).get(date_key)
+        if breadth is None or not np.isfinite(float(breadth)):
+            return 0.0
+        if float(breadth) < self.market_breadth_pause:
+            return 0.0
+        if float(breadth) < self.market_breadth_reduce:
+            return self.weak_market_position
+        return 1.0
+
+    def _position_equity(self) -> float:
+        try:
+            return float(self.trade_position.calculate_value())
+        except Exception as exc:
+            self._append_execution_diagnostic(
+                "position_equity_read_failed",
+                error_type=type(exc).__name__,
+            )
+            StructuredTaskLogger(
+                logger,
+                "redis-sector-momentum-leader-core",
+                {"backtest_id": getattr(self, "backtest_id", None)},
+            ).warning(
+                "position_equity_read_failed",
+                "读取账户权益失败，禁止新增买入",
+                error=exc,
+            )
+            return 0.0
+
+    def _cap_buy_order(
+        self,
+        order: Order,
+        date_key: str,
+        start_time: Any,
+        end_time: Any,
+        board_values: dict[str, float],
+        total_stock_value: float,
+    ) -> Order | None:
+        stock = str(order.stock_id)
+        detail = self.candidate_details.get(date_key, {}).get(stock, {})
+        board_code = str(detail.get("board_code") or "")
+        try:
+            open_price = float(
+                self.trade_exchange.get_deal_price(
+                    stock_id=stock,
+                    start_time=start_time,
+                    end_time=end_time,
+                    direction=OrderDir.BUY,
+                )
+            )
+            equity = self._position_equity()
+        except (TypeError, ValueError):
+            return None
+        if equity <= 0 or open_price <= 0 or not board_code:
+            return None
+        position_limit = self._market_position_limit(date_key)
+        if position_limit <= 0:
+            return None
+        existing_amount = float(self.trade_position.get_stock_amount(stock) or 0)
+        existing_value = existing_amount * open_price
+        stock_room = equity * self.max_stock_weight - existing_value
+        board_room = equity * self.max_board_weight - board_values.get(board_code, 0.0)
+        portfolio_room = equity * position_limit - total_stock_value
+        requested_value = float(order.amount) * open_price
+        allowed_value = min(requested_value, stock_room, board_room, portfolio_room)
+        if allowed_value <= 0:
+            return None
+        factor = self.trade_exchange.get_factor(
+            stock_id=stock, start_time=start_time, end_time=end_time
+        )
+        amount = self.trade_exchange.round_amount_by_trade_unit(
+            allowed_value / open_price, factor
+        )
+        if amount <= 0:
+            return None
+        board_values[board_code] = board_values.get(board_code, 0.0) + amount * open_price
+        order.amount = amount
+        return order
+
+    def _generate_execution_date_decision(
+        self, start_time: Any, end_time: Any
+    ) -> TradeDecisionWO:
+        """Use the already lagged execution-date score without another Qlib shift."""
+        pred_score = self.signal.get_signal(start_time=start_time, end_time=end_time)
+        if isinstance(pred_score, pd.DataFrame):
+            pred_score = pred_score.iloc[:, 0]
+        if pred_score is None or getattr(pred_score, "empty", False):
+            return TradeDecisionWO([], self)
+        ranked = pred_score.sort_values(ascending=False)
+        desired: list[str] = []
+        for stock in ranked.index:
+            stock = str(stock)
+            if self.trade_exchange.is_stock_tradable(
+                stock_id=stock, start_time=start_time, end_time=end_time
+            ):
+                desired.append(stock)
+            if len(desired) >= self.topk:
+                break
+        current_temp = copy.deepcopy(self.trade_position)
+        current_stocks = [str(stock) for stock in current_temp.get_stock_list()]
+        orders: list[Order] = []
+        cash = float(current_temp.get_cash())
+        for stock in current_stocks:
+            if stock in desired or not self.trade_exchange.is_stock_tradable(
+                stock_id=stock,
+                start_time=start_time,
+                end_time=end_time,
+                direction=OrderDir.SELL,
+            ):
+                continue
+            order = Order(
+                stock_id=stock,
+                amount=current_temp.get_stock_amount(stock),
+                start_time=start_time,
+                end_time=end_time,
+                direction=OrderDir.SELL,
+            )
+            if self.trade_exchange.check_order(order):
+                orders.append(order)
+                trade_value, trade_cost, _price = self.trade_exchange.deal_order(
+                    order, position=current_temp
+                )
+                cash += float(trade_value) - float(trade_cost)
+        buy = [stock for stock in desired if stock not in current_stocks]
+        allocation = cash / len(buy) if buy else 0.0
+        for stock in buy:
+            price = self.trade_exchange.get_deal_price(
+                stock_id=stock,
+                start_time=start_time,
+                end_time=end_time,
+                direction=OrderDir.BUY,
+            )
+            if price is None or float(price) <= 0:
+                continue
+            factor = self.trade_exchange.get_factor(
+                stock_id=stock, start_time=start_time, end_time=end_time
+            )
+            amount = self.trade_exchange.round_amount_by_trade_unit(
+                allocation / float(price), factor
+            )
+            if amount > 0:
+                orders.append(
+                    Order(
+                        stock_id=stock,
+                        amount=amount,
+                        start_time=start_time,
+                        end_time=end_time,
+                        direction=OrderDir.BUY,
+                    )
+                )
+        return TradeDecisionWO(orders, self)
+
+    def generate_trade_decision(self, execute_result=None):
+        trade_step, start_time, end_time, date_key = self._current_trade_context()
+        self._trade_step_by_date[date_key] = trade_step
+        self._record_fills(execute_result, max(0, trade_step - 1))
+        held_stocks = [str(stock) for stock in self.trade_position.get_stock_list()]
+        candidate_stocks = list(self.candidate_details.get(date_key, {}))
+        snapshot = self._load_prior_close_snapshot(
+            sorted(set(held_stocks + candidate_stocks)), start_time
+        )
+        forced = self._forced_exit_reasons(trade_step, date_key, snapshot)
+        if self.rebalance_days > 1 and trade_step % self.rebalance_days:
+            decision = TradeDecisionWO([], self)
+        else:
+            decision = self._generate_execution_date_decision(start_time, end_time)
+        total_stock_value = 0.0
+        board_values: dict[str, float] = defaultdict(float)
+        for stock in held_stocks:
+            price = snapshot.get(stock, {}).get("close")
+            if price is None or not np.isfinite(price) or price <= 0:
+                continue
+            value = float(self.trade_position.get_stock_amount(stock) or 0) * float(price)
+            total_stock_value += value
+            board_code = str(self._position_context.get(stock, {}).get("board_code") or "")
+            if board_code:
+                board_values[board_code] += value
+        orders = []
+        for order in decision.get_decision():
+            stock = str(order.stock_id)
+            if order.direction == OrderDir.BUY:
+                if stock in forced or not self._passes_gap_filter(
+                    order, date_key, start_time, end_time, snapshot
+                ):
+                    continue
+                order = self._cap_buy_order(
+                    order,
+                    date_key,
+                    start_time,
+                    end_time,
+                    board_values,
+                    total_stock_value,
+                )
+                if order is None:
+                    continue
+                total_stock_value += float(order.amount) * float(
+                    self.trade_exchange.get_deal_price(
+                        stock_id=stock,
+                        start_time=start_time,
+                        end_time=end_time,
+                        direction=OrderDir.BUY,
+                    )
+                )
+            orders.append(order)
+        existing_sells = {
+            str(order.stock_id)
+            for order in orders
+            if order.direction == OrderDir.SELL
+        }
+        for stock, reason in forced.items():
+            if stock in existing_sells:
+                continue
+            tradable = self.trade_exchange.is_stock_tradable(
+                stock_id=stock,
+                start_time=start_time,
+                end_time=end_time,
+                direction=OrderDir.SELL,
+            )
+            if not tradable:
+                blocked = self._forced_exit_blocked.get(stock)
+                if blocked is None:
+                    blocked = {
+                        "reason": reason,
+                        "blocked_since": date_key,
+                        "retries": 0,
+                    }
+                    self._forced_exit_blocked[stock] = blocked
+                    event = "forced_exit_blocked"
+                else:
+                    blocked["retries"] = int(blocked["retries"]) + 1
+                    event = "forced_exit_retry"
+                self._append_execution_diagnostic(
+                    event,
+                    date=date_key,
+                    stock=stock,
+                    reason=blocked["reason"],
+                    retries=blocked["retries"],
+                )
+                continue
+            amount = self.trade_position.get_stock_amount(stock)
+            if amount > 0:
+                orders.append(
+                    Order(
+                        stock_id=stock,
+                        amount=amount,
+                        start_time=start_time,
+                        end_time=end_time,
+                        direction=OrderDir.SELL,
+                    )
+                )
+                blocked = self._forced_exit_blocked.get(stock)
+                if blocked and blocked.get("recovered_order_date") != date_key:
+                    blocked["recovered_order_date"] = date_key
+                    self._append_execution_diagnostic(
+                        "forced_exit_recovered",
+                        date=date_key,
+                        stock=stock,
+                        reason=blocked["reason"],
+                        retries=blocked["retries"],
+                    )
+        return TradeDecisionWO(orders, self)
+
+    def post_exe_step(self, execute_result=None):
+        trade_step = int(self.trade_calendar.get_trade_step())
+        self._record_fills(execute_result, trade_step)
+        self.log_progress()
+        self.log_executed_trades(execute_result)
+
+
 class RedisStopLossStrategy(DynamicRiskMixin, TopkDropoutStrategy, RedisLoggerMixin):
     """
     止损止盈策略 (Stop Loss / Take Profit)

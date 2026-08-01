@@ -82,6 +82,120 @@ class CustomStrategyParams(BaseStrategyParams):
     lookback_days: int = Field(20, description="回看周期", ge=5, le=252)
 
 
+class SectorMomentumLeaderCoreParams(BaseModel):
+    """板块动量轮动策略参数；比例均使用小数，金额与市值单位为元。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    board_universe: Literal["sw_l1", "ths_concept"] = "sw_l1"
+    topk_sectors: int = Field(10, ge=5, le=20)
+    topk_stocks: int = Field(10, ge=1, le=10)
+    lookback_days: int = Field(80, ge=40, le=252)
+    min_board_members: int = Field(10, ge=10, le=30)
+    min_board_coverage: float = Field(0.60, ge=0.40, le=1.00)
+    max_holding_days: int = Field(10, ge=1, le=10)
+    rebalance_days: int = Field(1, ge=1, le=5)
+    max_stock_weight: float = Field(0.10, ge=0.02, le=0.20)
+    max_board_weight: float = Field(0.20, ge=0.05, le=0.50)
+    weak_market_position: float = Field(0.50, ge=0.00, le=1.00)
+    market_breadth_reduce: float = Field(0.40, ge=0.20, le=0.80)
+    market_breadth_pause: float = Field(0.30, ge=0.10, le=0.70)
+    crowding_warning_quantile: float = Field(0.90, ge=0.70, le=0.94)
+    crowding_overheat_quantile: float = Field(0.95, ge=0.80, le=0.99)
+    crowding_penalty_max: float = Field(15, ge=0, le=30)
+    launch_breadth_min: float = Field(0.30, ge=0.10, le=0.60)
+    launch_breadth_max: float = Field(0.60, ge=0.30, le=0.80)
+    launch_breadth_delta_min: float = Field(0.08, ge=0.00, le=0.30)
+    launch_limit_count_min: int = Field(1, ge=0, le=10)
+    launch_limit_count_max: int = Field(2, ge=1, le=15)
+    launch_limit_ratio_min: float = Field(0.01, ge=0.00, le=0.10)
+    launch_limit_ratio_max: float = Field(0.03, ge=0.01, le=0.20)
+    launch_amount_ratio_min: float = Field(1.15, ge=0.50, le=3.00)
+    launch_amount_ratio_max: float = Field(2.50, ge=1.00, le=5.00)
+    launch_relative_return_min: float = Field(0.00, ge=-0.10, le=0.20)
+    launch_relative_return_max: float = Field(0.10, ge=0.02, le=0.30)
+    diffusion_breadth_min: float = Field(0.60, ge=0.30, le=0.90)
+    diffusion_limit_count_min: int = Field(3, ge=1, le=20)
+    diffusion_limit_ratio_min: float = Field(0.03, ge=0.00, le=0.20)
+    diffusion_amount_quantile_min: float = Field(0.70, ge=0.40, le=0.95)
+    core_start_amount_ratio_min: float = Field(1.20, ge=0.80, le=3.00)
+    overheat_breadth_min: float = Field(0.80, ge=0.50, le=1.00)
+    overheat_relative_return_min: float = Field(0.12, ge=0.05, le=0.40)
+    retreat_breadth_max: float = Field(0.40, ge=0.10, le=0.70)
+    retreat_breadth_delta_max: float = Field(-0.10, ge=-0.40, le=0.00)
+    retreat_relative_return_max: float = Field(-0.03, ge=-0.20, le=0.00)
+    leader_float_mv_min: float = Field(5e9, ge=1e9, le=2e10)
+    leader_float_mv_max: float = Field(3e10, ge=1e10, le=1e11)
+    leader_amount_min: float = Field(3e8, ge=5e7, le=2e9)
+    leader_turnover_min: float = Field(0.05, ge=0.00, le=0.20)
+    leader_turnover_max: float = Field(0.25, ge=0.10, le=0.60)
+    leader_rps_min: float = Field(0.85, ge=0.50, le=0.99)
+    leader_amount_ratio_min: float = Field(1.20, ge=0.50, le=3.00)
+    leader_amount_ratio_max: float = Field(3.00, ge=1.00, le=6.00)
+    leader_return_3d_min: float = Field(0.03, ge=-0.10, le=0.20)
+    leader_return_3d_max: float = Field(0.25, ge=0.05, le=0.60)
+    leader_upper_shadow_amount_ratio: float = Field(2.00, ge=1.00, le=5.00)
+    leader_upper_shadow_ratio: float = Field(0.50, ge=0.20, le=0.90)
+    core_float_mv_min: float = Field(1e10, ge=2e9, le=1e11)
+    core_mv_top_quantile: float = Field(0.20, ge=0.05, le=0.50)
+    core_amount_min: float = Field(1e9, ge=1e8, le=5e9)
+    core_volatility_min: float = Field(0.25, ge=0.05, le=0.50)
+    core_volatility_max: float = Field(0.50, ge=0.20, le=1.00)
+    core_drawdown_min: float = Field(-0.12, ge=-0.50, le=-0.01)
+    core_amount_ratio_min: float = Field(1.10, ge=0.50, le=3.00)
+    core_amount_ratio_max: float = Field(2.50, ge=1.00, le=6.00)
+    core_return_5d_max: float = Field(0.20, ge=0.05, le=0.60)
+    leader_gap_down: float = Field(-0.03, ge=-0.15, le=0.00)
+    leader_gap_up: float = Field(0.05, ge=0.00, le=0.20)
+    core_gap_down: float = Field(-0.02, ge=-0.15, le=0.00)
+    core_gap_up: float = Field(0.03, ge=0.00, le=0.15)
+    stop_loss: float = Field(-0.03, ge=-0.20, le=-0.01)
+    leader_trailing_stop: float = Field(0.06, ge=0.02, le=0.20)
+    core_trailing_stop: float = Field(0.05, ge=0.02, le=0.20)
+    board_exit_rank: int = Field(20, ge=10, le=50)
+    board_exit_days: int = Field(2, ge=1, le=5)
+    board_score_drop_exit: float = Field(20, ge=5, le=50)
+
+    @model_validator(mode="after")
+    def validate_cross_field_constraints(self):
+        pairs = (
+            ("launch_breadth_min", "launch_breadth_max"),
+            ("launch_limit_count_min", "launch_limit_count_max"),
+            ("launch_limit_ratio_min", "launch_limit_ratio_max"),
+            ("launch_amount_ratio_min", "launch_amount_ratio_max"),
+            ("launch_relative_return_min", "launch_relative_return_max"),
+            ("leader_float_mv_min", "leader_float_mv_max"),
+            ("leader_turnover_min", "leader_turnover_max"),
+            ("leader_amount_ratio_min", "leader_amount_ratio_max"),
+            ("leader_return_3d_min", "leader_return_3d_max"),
+            ("core_volatility_min", "core_volatility_max"),
+            ("core_amount_ratio_min", "core_amount_ratio_max"),
+        )
+        for lower, upper in pairs:
+            if getattr(self, lower) >= getattr(self, upper):
+                raise ValueError(f"{lower} must be less than {upper}")
+        if self.market_breadth_pause >= self.market_breadth_reduce:
+            raise ValueError(
+                "market_breadth_pause must be less than market_breadth_reduce"
+            )
+        if self.crowding_warning_quantile >= self.crowding_overheat_quantile:
+            raise ValueError(
+                "crowding_warning_quantile must be less than "
+                "crowding_overheat_quantile"
+            )
+        if self.launch_breadth_max >= self.overheat_breadth_min:
+            raise ValueError(
+                "launch_breadth_max must be less than overheat_breadth_min"
+            )
+        if self.max_stock_weight > self.max_board_weight:
+            raise ValueError("max_stock_weight must not exceed max_board_weight")
+        if self.topk_stocks * self.max_stock_weight > 1.0:
+            raise ValueError("topk_stocks * max_stock_weight must not exceed 1")
+        if self.leader_gap_down >= 0 or self.core_gap_down >= 0:
+            raise ValueError("gap down boundaries must be negative")
+        return self
+
+
 
 class QlibBacktestRequest(BaseModel):
     """Qlib 回测请求"""
@@ -111,6 +225,8 @@ class QlibBacktestRequest(BaseModel):
                     data["strategy_params"] = DeepTimeSeriesParams(**params)
                 elif strat_type == "AdaptiveDrift":
                     data["strategy_params"] = AdaptiveDriftParams(**params)
+                elif str(strat_type).lower() == "sector_momentum_leader_core":
+                    data["strategy_params"] = SectorMomentumLeaderCoreParams(**params)
                 else:
                     data["strategy_params"] = CustomStrategyParams(**params)
         return data
@@ -207,6 +323,13 @@ class QlibBacktestRequest(BaseModel):
         "manual",
         description="历史来源标记：manual=普通回测，optimization=参数优化子任务",
     )
+
+    @model_validator(mode="after")
+    def enforce_sector_execution_timing(self):
+        if self.strategy_type.strip().lower() == "sector_momentum_leader_core":
+            self.deal_price = "open"
+            self.signal_lag_days = 1
+        return self
 
 
 class QlibPortfolioMetrics(BaseModel):

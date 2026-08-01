@@ -3,23 +3,50 @@
  * 根据选定的策略类型动态渲染参数表单
  */
 import React from 'react';
-import { QlibStrategyParams } from '../../types/backtest/qlib';
+import type { QlibStrategyParams } from '../../types/backtest/qlib';
 import { HelpCircle } from 'lucide-react';
-import { shouldShowNDrop } from '../../shared/qlib/strategyParams';
+import { shouldShowNDrop, SECTOR_MOMENTUM_LEADER_CORE_ID } from '../../shared/qlib/strategyParams';
+import type { StrategyTemplate, StrategyTemplateParam } from '../../data/qlibStrategyTemplates';
 
 interface Props {
   strategyType: string;
   params: QlibStrategyParams;
   onChange: (params: QlibStrategyParams) => void;
   strategyCode?: string;
+  template?: StrategyTemplate | null;
 }
 
-export const QlibStrategyConfigurator: React.FC<Props> = ({ strategyType, params, onChange, strategyCode }) => {
+const STRATEGY_LEVEL_HIDDEN_PARAM_KEYS = new Set(['buy_cost', 'sell_cost', 'signal']);
+
+function resolveTemplateParamType(
+  param: StrategyTemplateParam,
+): NonNullable<StrategyTemplateParam['type']> {
+  if (param.type) return param.type;
+  if (param.options && param.options.length > 0) return 'select';
+  if (typeof param.default === 'boolean') return 'boolean';
+  if (typeof param.default === 'number') return 'number';
+  return 'string';
+}
+
+export const QlibStrategyConfigurator: React.FC<Props> = ({
+  strategyType,
+  params,
+  onChange,
+  strategyCode,
+  template,
+}) => {
   const isLongShortTopk = strategyType === 'long_short_topk';
+  const isSectorMomentumLeaderCore = strategyType === SECTOR_MOMENTUM_LEADER_CORE_ID;
   const paramMap = params as Record<string, unknown>;
   const hasParam = (key: string) => paramMap[key] !== undefined && paramMap[key] !== null;
   const getNumberParam = (key: string, fallback: number) =>
     typeof paramMap[key] === 'number' ? (paramMap[key] as number) : fallback;
+  const shouldHideTemplateParam = (param: StrategyTemplateParam) =>
+    STRATEGY_LEVEL_HIDDEN_PARAM_KEYS.has(param.name) ||
+    (!isSectorMomentumLeaderCore && param.name === 'rebalance_days');
+  const visibleTemplateParams = (template?.params || []).filter(
+    (param) => !shouldHideTemplateParam(param)
+  );
 
   // 判断是否应该显示 n_drop 参数
   const showNDrop = shouldShowNDrop(strategyCode, strategyType);
@@ -46,6 +73,120 @@ export const QlibStrategyConfigurator: React.FC<Props> = ({ strategyType, params
     'market_state_symbol',
     'enable_short_selling',
   ]);
+
+  const renderTemplateParamControl = (param: StrategyTemplateParam) => {
+    const inputId = `strategy-param-${param.name}`;
+    const helpId = `${inputId}-help`;
+    const currentValue = paramMap[param.name] ?? param.default;
+    const label = param.label || param.name;
+    const showMeta = param.min !== undefined || param.max !== undefined || param.step !== undefined;
+    const paramType = resolveTemplateParamType(param);
+
+    if (paramType === 'boolean') {
+      return (
+        <label key={param.name} htmlFor={inputId} className="flex items-start justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+          <div className="space-y-1">
+            <span className="block text-sm font-medium text-gray-800">{label}</span>
+            <span id={helpId} className="block text-xs leading-relaxed text-gray-500">
+              {param.description}
+            </span>
+          </div>
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={Boolean(currentValue)}
+            aria-describedby={helpId}
+            onChange={(e) => onChange({ ...params, [param.name]: e.target.checked })}
+            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+        </label>
+      );
+    }
+
+    if (paramType === 'select' && param.options && param.options.length > 0) {
+      return (
+        <div key={param.name} className="space-y-2">
+          <label htmlFor={inputId} className="block text-sm font-medium text-gray-800">
+            {label}
+          </label>
+          <p id={helpId} className="text-xs leading-relaxed text-gray-500">
+            {param.description}
+          </p>
+          <select
+            id={inputId}
+            aria-describedby={helpId}
+            value={String(currentValue)}
+            onChange={(e) => onChange({ ...params, [param.name]: e.target.value })}
+            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+          >
+            {param.options.map((option) => (
+              <option key={String(option.value)} value={String(option.value)}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <div className="space-y-1">
+            {param.options.map((option) => (
+              <div key={`${param.name}-${option.value}`} className="text-[11px] text-gray-500">
+                <span className="font-medium text-gray-700">{option.label}</span>
+                {option.description ? ` · ${option.description}` : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    const numericLike = paramType === 'number' || paramType === 'integer' || typeof param.default === 'number';
+    const displayValue = numericLike ? Number(currentValue) : String(currentValue ?? '');
+
+    return (
+      <div key={param.name} className="space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <label htmlFor={inputId} className="block text-sm font-medium text-gray-800">
+            {label}
+          </label>
+          {numericLike && Number.isFinite(displayValue) && (
+            <span className="rounded-lg bg-gray-100 px-2 py-0.5 text-xs font-mono text-gray-700">
+              {paramType === 'integer' ? displayValue : displayValue.toString()}
+            </span>
+          )}
+        </div>
+        <p id={helpId} className="text-xs leading-relaxed text-gray-500">
+          {param.description}
+        </p>
+        <input
+          id={inputId}
+          type={numericLike ? 'number' : 'text'}
+          inputMode={numericLike ? 'decimal' : 'text'}
+          aria-describedby={helpId}
+          value={numericLike ? String(displayValue) : String(currentValue ?? '')}
+          min={numericLike ? param.min : undefined}
+          max={numericLike ? param.max : undefined}
+          step={numericLike ? param.step ?? (paramType === 'integer' ? 1 : 0.01) : undefined}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            if (!numericLike) {
+              onChange({ ...params, [param.name]: nextValue });
+              return;
+            }
+
+            const parsedValue = paramType === 'integer'
+              ? Number.parseInt(nextValue, 10)
+              : Number(nextValue);
+            if (Number.isNaN(parsedValue)) return;
+            onChange({ ...params, [param.name]: parsedValue });
+          }}
+          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+        />
+        {showMeta && (
+          <div className="text-[11px] text-gray-400">
+            范围 {param.min ?? '-'} ~ {param.max ?? '-'}，步长 {param.step ?? (paramType === 'integer' ? 1 : 0.01)}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // 渲染通用的 TopK 滑块
   const renderTopK = (label = "持仓股票总数", min = 5, max = 100) => {
@@ -325,7 +466,7 @@ export const QlibStrategyConfigurator: React.FC<Props> = ({ strategyType, params
         )}
 
         {/* 6. 风险平价 */}
-        {!isLongShortTopk && hasParam('lookback_days') && (
+        {!isLongShortTopk && !isSectorMomentumLeaderCore && hasParam('lookback_days') && (
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-sm text-gray-700">波动率估计回看周期 (天)</label>
@@ -344,7 +485,7 @@ export const QlibStrategyConfigurator: React.FC<Props> = ({ strategyType, params
         )}
 
         {/* 8. 止损止盈 */}
-        {(hasParam('stop_loss') || hasParam('take_profit')) && (
+        {!isSectorMomentumLeaderCore && (hasParam('stop_loss') || hasParam('take_profit')) && (
           <>
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -401,8 +542,22 @@ export const QlibStrategyConfigurator: React.FC<Props> = ({ strategyType, params
           </div>
         )}
 
+        {isSectorMomentumLeaderCore && visibleTemplateParams.length > 0 && (
+          <div className="pt-4 border-t border-gray-100 space-y-4">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wider text-gray-400">策略阈值参数</div>
+              <div className="mt-1 text-[11px] leading-relaxed text-gray-500">
+                参数标签、说明、范围和步长均来自模板 metadata；提交时会原样进入后端，再由后端做最终边界校验。
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {visibleTemplateParams.map(renderTemplateParamControl)}
+            </div>
+          </div>
+        )}
+
         {/* 9. 通用动态参数兜底（模板定义了数值/布尔参数即展示） */}
-        {(() => {
+        {!isSectorMomentumLeaderCore && (() => {
           const extraNumberEntries = Object.entries(paramMap).filter(
             ([key, value]) => typeof value === 'number' && !KNOWN_PARAM_KEYS.has(key)
           );

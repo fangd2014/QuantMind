@@ -1,6 +1,8 @@
 import { QlibStrategyParams, QlibStrategyType } from '../../types/backtest/qlib';
 import { StrategyTemplate, QLIB_STRATEGY_TEMPLATES } from '../../data/qlibStrategyTemplates';
 
+export const SECTOR_MOMENTUM_LEADER_CORE_ID = 'sector_momentum_leader_core';
+
 const COMMON_PARAM_KEYS = [
   'signal',
   'rebalance_days',
@@ -93,6 +95,77 @@ const HARDCODED_FALLBACK_PARAMS: Record<string, QlibStrategyParams> = {
   long_short_topk: { topk: 50, short_topk: 50, signal: '<PRED>', rebalance_days: 3, min_score: 0.0, max_weight: 0.05, long_exposure: 1.0, short_exposure: 1.0, enable_short_selling: true },
   momentum: { topk: 30, n_drop: 6, signal: '<PRED>', rebalance_days: 3, momentum_period: 20, enable_short_selling: false },
   StopLoss: { topk: 30, n_drop: 6, signal: '<PRED>', rebalance_days: 3, stop_loss: -0.08, take_profit: 0.15, enable_short_selling: false },
+  sector_momentum_leader_core: {
+    board_universe: 'sw_l1',
+    topk_sectors: 10,
+    topk_stocks: 10,
+    lookback_days: 80,
+    min_board_members: 10,
+    min_board_coverage: 0.6,
+    max_holding_days: 10,
+    rebalance_days: 1,
+    max_stock_weight: 0.1,
+    max_board_weight: 0.2,
+    weak_market_position: 0.5,
+    market_breadth_reduce: 0.4,
+    market_breadth_pause: 0.3,
+    crowding_warning_quantile: 0.9,
+    crowding_overheat_quantile: 0.95,
+    crowding_penalty_max: 15,
+    launch_breadth_min: 0.3,
+    launch_breadth_max: 0.6,
+    launch_breadth_delta_min: 0.08,
+    launch_limit_count_min: 1,
+    launch_limit_count_max: 2,
+    launch_limit_ratio_min: 0.01,
+    launch_limit_ratio_max: 0.03,
+    launch_amount_ratio_min: 1.15,
+    launch_amount_ratio_max: 2.5,
+    launch_relative_return_min: 0.0,
+    launch_relative_return_max: 0.1,
+    diffusion_breadth_min: 0.6,
+    diffusion_limit_count_min: 3,
+    diffusion_limit_ratio_min: 0.03,
+    diffusion_amount_quantile_min: 0.7,
+    core_start_amount_ratio_min: 1.2,
+    overheat_breadth_min: 0.8,
+    overheat_relative_return_min: 0.12,
+    retreat_breadth_max: 0.4,
+    retreat_breadth_delta_max: -0.1,
+    retreat_relative_return_max: -0.03,
+    leader_float_mv_min: 5e9,
+    leader_float_mv_max: 3e10,
+    leader_amount_min: 3e8,
+    leader_turnover_min: 0.05,
+    leader_turnover_max: 0.25,
+    leader_rps_min: 0.85,
+    leader_amount_ratio_min: 1.2,
+    leader_amount_ratio_max: 3.0,
+    leader_return_3d_min: 0.03,
+    leader_return_3d_max: 0.25,
+    leader_upper_shadow_amount_ratio: 2.0,
+    leader_upper_shadow_ratio: 0.5,
+    core_float_mv_min: 1e10,
+    core_mv_top_quantile: 0.2,
+    core_amount_min: 1e9,
+    core_volatility_min: 0.25,
+    core_volatility_max: 0.5,
+    core_drawdown_min: -0.12,
+    core_amount_ratio_min: 1.1,
+    core_amount_ratio_max: 2.5,
+    core_return_5d_max: 0.2,
+    leader_gap_down: -0.03,
+    leader_gap_up: 0.05,
+    core_gap_down: -0.02,
+    core_gap_up: 0.03,
+    stop_loss: -0.03,
+    leader_trailing_stop: 0.06,
+    core_trailing_stop: 0.05,
+    board_exit_rank: 20,
+    board_exit_days: 2,
+    board_score_drop_exit: 20,
+    enable_short_selling: false,
+  },
   risk_guard_topk: {
     topk: 50,
     n_drop: 10,
@@ -132,6 +205,40 @@ export function registerRuntimeTemplates(templates: StrategyTemplate[]): void {
   }
 }
 
+export function getStrategyTemplate(
+  strategyType: string,
+  templates?: StrategyTemplate[],
+): StrategyTemplate | undefined {
+  const list = templates && templates.length > 0 ? templates : _runtimeTemplates;
+  return (
+    list.find(t => t.id === strategyType) ||
+    QLIB_STRATEGY_TEMPLATES.find(t => t.id === strategyType)
+  );
+}
+
+export function resolveStrategyExecutionSettings(
+  strategyType: string,
+  tailTradeEnabled: boolean,
+): {
+  dealPrice: 'open' | 'close';
+  signalLagDays: number;
+  tailTradeLocked: boolean;
+} {
+  if (strategyType === SECTOR_MOMENTUM_LEADER_CORE_ID) {
+    return {
+      dealPrice: 'open',
+      signalLagDays: 1,
+      tailTradeLocked: true,
+    };
+  }
+
+  return {
+    dealPrice: tailTradeEnabled ? 'close' : 'open',
+    signalLagDays: tailTradeEnabled ? 0 : 1,
+    tailTradeLocked: false,
+  };
+}
+
 // -----------------------------------------------------------------------
 // 核心函数
 // -----------------------------------------------------------------------
@@ -143,8 +250,7 @@ export function getDefaultStrategyParams(
   strategyType: string,
   templates?: StrategyTemplate[]
 ): QlibStrategyParams {
-  const list = templates && templates.length > 0 ? templates : _runtimeTemplates;
-  const template = list.find(t => t.id === strategyType);
+  const template = getStrategyTemplate(strategyType, templates);
 
   if (template) {
     const defaults: QlibStrategyParams = {
@@ -156,6 +262,8 @@ export function getDefaultStrategyParams(
     for (const param of template.params) {
       const v = param.default;
       if (typeof v === 'number') {
+        (defaults as Record<string, unknown>)[param.name] = v;
+      } else if (typeof v === 'boolean') {
         (defaults as Record<string, unknown>)[param.name] = v;
       } else if (typeof v === 'string' && v.toLowerCase() === 'true') {
         (defaults as Record<string, unknown>)[param.name] = true;
@@ -196,8 +304,7 @@ export function getDefaultStrategyParams(
  * 从模板元数据推导该策略允许的额外参数键名。
  */
 function resolveTemplateParamKeys(strategyType: string, templates?: StrategyTemplate[]): string[] {
-  const list = templates && templates.length > 0 ? templates : _runtimeTemplates;
-  const template = list.find(t => t.id === strategyType);
+  const template = getStrategyTemplate(strategyType, templates);
   return template ? template.params.map(p => p.name) : [];
 }
 
