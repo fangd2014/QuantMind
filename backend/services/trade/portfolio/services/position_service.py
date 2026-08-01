@@ -129,7 +129,7 @@ class PositionService:
         if tenant_id is not None:
             stmt = stmt.where(Portfolio.tenant_id == tenant_id)
         if user_id is not None:
-            stmt = stmt.where(Portfolio.user_id == user_id)
+            stmt = stmt.where(Portfolio.user_id == str(user_id))
         result = await db.execute(stmt)
         position = result.scalar_one_or_none()
 

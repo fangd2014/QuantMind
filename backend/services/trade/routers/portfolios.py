@@ -114,7 +114,7 @@ async def list_portfolios(
             .where(
                 and_(
                     Portfolio.tenant_id == tenant_id,
-                    Portfolio.user_id == user_id,
+                    Portfolio.user_id == str(user_id),
                     Portfolio.is_deleted == False,
                 )
             )
@@ -171,7 +171,7 @@ async def get_all_portfolios_distribution(
             .where(
                 and_(
                     Portfolio.tenant_id == tenant_id,
-                    Portfolio.user_id == user_id,
+                    Portfolio.user_id == str(user_id),
                     Position.status == "holding",
                 )
             )
@@ -254,7 +254,7 @@ async def get_all_portfolios_performance(
             .join(Portfolio)
             .where(
                 Portfolio.tenant_id == tenant_id,
-                Portfolio.user_id == user_id,
+                Portfolio.user_id == str(user_id),
             )
         )
 

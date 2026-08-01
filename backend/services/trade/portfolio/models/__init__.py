@@ -28,7 +28,10 @@ class Portfolio(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(String(64), nullable=False, default="default", index=True, comment="租户ID")
-    user_id = Column(String(32), nullable=False, index=True, comment="用户ID")
+    # Production PostgreSQL stores user identifiers as VARCHAR(64).  Keep the
+    # ORM type aligned so asyncpg does not generate ``varchar = integer``
+    # comparisons for portfolio queries.
+    user_id = Column(String(64), nullable=False, index=True, comment="用户ID")
     name = Column(String(100), nullable=False, comment="组合名称")
     description = Column(Text, nullable=True, comment="组合描述")
 

@@ -636,7 +636,7 @@ async def _sync_qmt_account_to_db(
         select(Portfolio).where(
             and_(
                 Portfolio.tenant_id == tenant_id,
-                Portfolio.user_id == user_id,
+                Portfolio.user_id == str(user_id),
                 Portfolio.trading_mode == "REAL",
                 Portfolio.status == "active",
                 Portfolio.is_deleted == False,

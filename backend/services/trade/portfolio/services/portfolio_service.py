@@ -35,7 +35,7 @@ class PortfolioService:
         stmt = select(func.count(Portfolio.id)).where(
             and_(
                 Portfolio.tenant_id == data.tenant_id,
-                Portfolio.user_id == data.user_id,
+                Portfolio.user_id == str(data.user_id),
                 Portfolio.is_deleted == False,
             )
         )
@@ -48,7 +48,7 @@ class PortfolioService:
             # 创建组合
         portfolio = Portfolio(
             tenant_id=data.tenant_id,
-            user_id=data.user_id,
+            user_id=str(data.user_id),
             name=data.name,
             description=data.description,
             initial_capital=data.initial_capital,
@@ -88,7 +88,7 @@ class PortfolioService:
         if tenant_scope is not None:
             stmt = stmt.where(Portfolio.tenant_id == tenant_scope)
         if user_id is not None:
-            stmt = stmt.where(Portfolio.user_id == user_id)
+            stmt = stmt.where(Portfolio.user_id == str(user_id))
 
         result = await db.execute(stmt)
         portfolio = result.scalar_one_or_none()
@@ -114,7 +114,7 @@ class PortfolioService:
         stmt = select(Portfolio).where(
             and_(
                 Portfolio.tenant_id == tenant_id,
-                Portfolio.user_id == user_id,
+                Portfolio.user_id == str(user_id),
                 Portfolio.is_deleted == False,
             )
         )
