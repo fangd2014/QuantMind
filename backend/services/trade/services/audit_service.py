@@ -88,7 +88,10 @@ class TradeAuditService:
     async def _get_cloud_positions(self, db: AsyncSession, user_id: int, tenant_id: str) -> dict[str, int]:
         """从数据库查询该用户所有组合的汇总持仓"""
         # 查找该用户的所有活跃组合
-        stmt = select(Portfolio.id).where(Portfolio.user_id == user_id, Portfolio.tenant_id == tenant_id)
+        stmt = select(Portfolio.id).where(
+            Portfolio.user_id == str(user_id),
+            Portfolio.tenant_id == tenant_id,
+        )
         result = await db.execute(stmt)
         portfolio_ids = result.scalars().all()
 

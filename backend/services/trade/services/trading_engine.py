@@ -437,7 +437,7 @@ class TradingEngine:
                 .where(
                     and_(
                         Portfolio.id == order.portfolio_id,
-                        Portfolio.user_id == user_id,
+                        Portfolio.user_id == str(user_id),
                         Portfolio.tenant_id == order.tenant_id,
                         Portfolio.is_deleted == False,
                     )

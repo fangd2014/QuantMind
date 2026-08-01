@@ -241,8 +241,8 @@ async def update_real_account_settings(
             .where(
                 and_(
                     Portfolio.tenant_id == resolved_tenant_id,
-                    Portfolio.user_id == (int(resolved_user_id) if resolved_user_id.isdigit() else 0),
-                    Portfolio.mode == "REAL"
+                    Portfolio.user_id == str(resolved_user_id),
+                    Portfolio.trading_mode == "REAL"
                 )
             )
             .values(initial_capital=request.initial_equity, updated_at=datetime.utcnow())
@@ -284,5 +284,4 @@ async def update_real_account_settings(
 
     await db.commit()
     return {"status": "success", "message": "实盘统计基准已更新并同步到当日账本"}
-
 

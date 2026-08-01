@@ -1617,14 +1617,13 @@ class ManualExecutionService:
         strategy_id: str,
         strategy_name: str,
     ) -> Portfolio | None:
-        try:
-            user_id_int = int(user_id)
-        except (TypeError, ValueError):
+        user_id_text = str(user_id or "").strip()
+        if not user_id_text:
             return None
 
         conditions = [
             Portfolio.tenant_id == tenant_id,
-            Portfolio.user_id == user_id_int,
+            Portfolio.user_id == user_id_text,
             Portfolio.status == "active",
             Portfolio.is_deleted == False,
             Portfolio.trading_mode == "REAL",
@@ -1667,7 +1666,7 @@ class ManualExecutionService:
 
         portfolio = Portfolio(
             tenant_id=tenant_id,
-            user_id=user_id_int,
+            user_id=user_id_text,
             name=f"{strategy_name or strategy_id_text or '默认策略'} 实盘组合",
             description="首次实盘手动执行自动初始化",
             initial_capital=total_asset,

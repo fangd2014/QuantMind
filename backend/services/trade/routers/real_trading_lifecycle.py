@@ -588,12 +588,12 @@ async def stop_trading(
 
         # 同步更新数据库中 portfolio 的 run_status
         try:
-            user_id_int = int(resolved_user_id)
+            user_id_text = str(resolved_user_id).strip()
             stmt = (
                 select(Portfolio)
                 .where(
                     Portfolio.tenant_id == resolved_tenant_id,
-                    Portfolio.user_id == user_id_int,
+                    Portfolio.user_id == user_id_text,
                     Portfolio.run_status == "running",
                     Portfolio.is_deleted.is_(False),
                 )

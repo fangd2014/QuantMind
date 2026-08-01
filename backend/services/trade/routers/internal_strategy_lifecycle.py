@@ -68,7 +68,7 @@ async def sync_account_state(
             .where(
                 and_(
                     Portfolio.tenant_id == tenant_id,
-                    Portfolio.user_id == user_id,
+                    Portfolio.user_id == str(user_id),
                     Portfolio.status == "active",
                     Portfolio.is_deleted == False,
                 )
