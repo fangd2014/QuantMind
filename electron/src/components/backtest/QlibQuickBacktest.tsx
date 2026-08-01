@@ -20,10 +20,19 @@ import { QlibResultDisplay, ErrorLogModal } from './QlibResultComponents';
 import { useBacktestCenterStore } from '../../stores/backtestCenterStore';
 import { normalizeUserId } from '../../features/strategy-wizard/utils/userId';
 import { QLIB_REBALANCE_DAY_OPTIONS } from '../../shared/qlib/rebalance';
-import { getTemplateById } from '../../data/qlibStrategyTemplates';
 import { blendBacktestProgress, getBacktestStageMessage } from './progressUtils';
-import { getDefaultStrategyParams, sanitizeStrategyParams } from '../../shared/qlib/strategyParams';
-import { getStoredTailTradeMode, setStoredTailTradeMode, getTailTradeDealPrice, getTailTradeSignalLagDays, ALLOW_FEATURE_SIGNAL_FALLBACK } from '../../shared/qlib/tailTradeMode';
+import {
+  getDefaultStrategyParams,
+  getStrategyTemplate,
+  resolveStrategyExecutionSettings,
+  sanitizeStrategyParams,
+  SECTOR_MOMENTUM_LEADER_CORE_ID,
+} from '../../shared/qlib/strategyParams';
+import {
+  getStoredTailTradeMode,
+  setStoredTailTradeMode,
+  ALLOW_FEATURE_SIGNAL_FALLBACK,
+} from '../../shared/qlib/tailTradeMode';
 import { strategyManagementService } from '../../services/strategyManagementService';
 import { modelTrainingService, UserModelRecord } from '../../services/modelTrainingService';
 import { useAppSelector } from '../../store';
@@ -52,7 +61,7 @@ const MARKET_UNIVERSE_PRESETS: Record<string, { label: string; value: string }[]
 };
 
 const DEFAULT_TEMPLATE_ID = 'standard_topk';
-const DEFAULT_TEMPLATE = getTemplateById(DEFAULT_TEMPLATE_ID);
+const DEFAULT_TEMPLATE = getStrategyTemplate(DEFAULT_TEMPLATE_ID);
 
 export const QlibQuickBacktest: React.FC = () => {
   const stopPollingRef = useRef<(() => void) | null>(null);
@@ -108,6 +117,9 @@ export const QlibQuickBacktest: React.FC = () => {
   const [strategyParams, setStrategyParams] = useState<QlibStrategyParams>(
     getDefaultStrategyParams(DEFAULT_TEMPLATE_ID)
   );
+  const isSectorMomentumLeaderCore = strategyType === SECTOR_MOMENTUM_LEADER_CORE_ID;
+  const selectedTemplate = getStrategyTemplate(strategyType);
+  const executionSettings = resolveStrategyExecutionSettings(strategyType, tailTradeEnabled);
 
   // 追踪是否已处理过 localStorage 中的策略 ID
   const pendingStrategyHandledRef = useRef(false);
@@ -375,8 +387,8 @@ export const QlibQuickBacktest: React.FC = () => {
         model_id: selectedModelId || undefined,
         seed: seed.trim() === '' ? undefined : Number(seed),
         commission: 0.00025,
-        deal_price: getTailTradeDealPrice(tailTradeEnabled),
-        signal_lag_days: getTailTradeSignalLagDays(tailTradeEnabled),
+        deal_price: executionSettings.dealPrice,
+        signal_lag_days: executionSettings.signalLagDays,
         allow_feature_signal_fallback: ALLOW_FEATURE_SIGNAL_FALLBACK,
         qlib_provider_uri: marketConfig.qlibProviderUri,
         qlib_region: marketConfig.qlibRegion,
@@ -756,43 +768,49 @@ export const QlibQuickBacktest: React.FC = () => {
                   <span className="w-8 h-8 rounded-xl bg-blue-500/10 flex items-center justify-center"><Settings2 className="w-4 h-4 text-blue-600" /></span> 基础配置
                 </h3>
               </div>
-              <div
-                className="relative flex items-center gap-2 shrink-0"
-                onMouseEnter={() => {
-                  tailTradeTimerRef.current = window.setTimeout(() => setShowTailTradeTooltip(true), 1000);
-                }}
-                onMouseLeave={() => {
-                  if (tailTradeTimerRef.current) { clearTimeout(tailTradeTimerRef.current); tailTradeTimerRef.current = null; }
-                  setShowTailTradeTooltip(false);
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setTailTradeEnabled(!tailTradeEnabled)}
-                  className={`flex items-center gap-2 px-2.5 py-1 rounded-full border transition-all duration-200 ${
-                    tailTradeEnabled
-                      ? 'bg-blue-50 border-blue-200 text-blue-700'
-                      : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
-                  }`}
+              {!executionSettings.tailTradeLocked ? (
+                <div
+                  className="relative flex items-center gap-2 shrink-0"
+                  onMouseEnter={() => {
+                    tailTradeTimerRef.current = window.setTimeout(() => setShowTailTradeTooltip(true), 1000);
+                  }}
+                  onMouseLeave={() => {
+                    if (tailTradeTimerRef.current) { clearTimeout(tailTradeTimerRef.current); tailTradeTimerRef.current = null; }
+                    setShowTailTradeTooltip(false);
+                  }}
                 >
-                  <span className="text-[11px] font-bold">尾盘交易</span>
-                  <span className={`px-1.5 py-0.5 rounded-lg text-[9px] font-black min-w-[28px] text-center transition-all ${
-                    tailTradeEnabled
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-500 border border-gray-100 shadow-sm'
-                  }`}>
-                    {tailTradeEnabled ? 'ON' : 'OFF'}
-                  </span>
-                </button>
-                {showTailTradeTooltip && (
-                  <div className="absolute top-full right-0 mt-2 px-2.5 py-1.5 bg-gray-900 text-white text-[11px] rounded-lg whitespace-nowrap z-50 shadow-lg">
-                    {tailTradeEnabled
-                      ? '尾盘交易：T日信号+T+1收盘成交'
-                      : '标准口径：T日信号+T+1开盘成交'}
-                    <div className="absolute bottom-full right-3 border-4 border-transparent border-b-gray-900" />
-                  </div>
-                )}
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => setTailTradeEnabled(!tailTradeEnabled)}
+                    className={`flex items-center gap-2 px-2.5 py-1 rounded-full border transition-all duration-200 ${
+                      tailTradeEnabled
+                        ? 'bg-blue-50 border-blue-200 text-blue-700'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-[11px] font-bold">尾盘交易</span>
+                    <span className={`px-1.5 py-0.5 rounded-lg text-[9px] font-black min-w-[28px] text-center transition-all ${
+                      tailTradeEnabled
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-500 border border-gray-100 shadow-sm'
+                    }`}>
+                      {tailTradeEnabled ? 'ON' : 'OFF'}
+                    </span>
+                  </button>
+                  {showTailTradeTooltip && (
+                    <div className="absolute top-full right-0 mt-2 px-2.5 py-1.5 bg-gray-900 text-white text-[11px] rounded-lg whitespace-nowrap z-50 shadow-lg">
+                      {tailTradeEnabled
+                        ? '尾盘交易：当日预测+收盘成交'
+                        : '次日生效：T+1预测+开盘成交'}
+                      <div className="absolute bottom-full right-3 border-4 border-transparent border-b-gray-900" />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-700">
+                  固定 T+1 开盘成交
+                </div>
+              )}
             </div>
 
             <div>
@@ -865,20 +883,22 @@ export const QlibQuickBacktest: React.FC = () => {
                   className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-600 mb-2">调仓周期 (Rebalance)</label>
-                <select
-                  value={strategyParams.rebalance_days || 3}
-                  onChange={(e) => setStrategyParams({ ...strategyParams, rebalance_days: Number(e.target.value) })}
-                  className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                >
-                  {QLIB_REBALANCE_DAY_OPTIONS.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label} ({item.labelEn})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isSectorMomentumLeaderCore && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">调仓周期 (Rebalance)</label>
+                  <select
+                    value={strategyParams.rebalance_days || 3}
+                    onChange={(e) => setStrategyParams({ ...strategyParams, rebalance_days: Number(e.target.value) })}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    {QLIB_REBALANCE_DAY_OPTIONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label} ({item.labelEn})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -892,19 +912,24 @@ export const QlibQuickBacktest: React.FC = () => {
               </div>
               <div>
                 <div className="flex items-center gap-2 mb-2">
-                  <label className="text-sm font-medium text-gray-600">成交价格 (Deal Price)</label>
-                </div>
-                <select
-                  value={getTailTradeDealPrice(tailTradeEnabled)}
+                <label className="text-sm font-medium text-gray-600">成交价格 (Deal Price)</label>
+              </div>
+              <select
+                  value={executionSettings.dealPrice}
                   onChange={(e) => setDealPrice(e.target.value as 'open' | 'close')}
-                  disabled={tailTradeEnabled}
+                  disabled={tailTradeEnabled || executionSettings.tailTradeLocked}
                   className={`w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-500 ${
-                    tailTradeEnabled ? 'text-gray-400 cursor-not-allowed' : ''
+                    tailTradeEnabled || executionSettings.tailTradeLocked ? 'text-gray-400 cursor-not-allowed' : ''
                   }`}
                 >
                   <option value="open">开盘价成交 (Open)</option>
                   <option value="close">收盘价成交 (Close)</option>
                 </select>
+                {executionSettings.tailTradeLocked && (
+                  <div className="mt-1 text-[11px] leading-relaxed text-amber-700">
+                    板块动量轮动+龙头中军选股固定使用 `deal_price=open` 与 `signal_lag_days=1`，不允许切换到同日收盘成交。
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>
@@ -920,6 +945,7 @@ export const QlibQuickBacktest: React.FC = () => {
               params={strategyParams}
               onChange={setStrategyParams}
               strategyCode={strategyInfo?.code}
+              template={selectedTemplate}
             />
           </motion.div>
 

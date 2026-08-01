@@ -115,10 +115,12 @@ COPY docker/training/train.py /app/train.py
 # 复制源代码
 COPY backend backend
 COPY config config
+COPY scripts scripts
 COPY strategy_templates strategy_templates
 
 # 创建数据目录 & Qlib 符号链接（运行时由 rd_loop_wrapper 按实际缓存路径创建）
-RUN mkdir -p /data/models /data/qlib_data /data/uploads /data/strategies /tmp \
+RUN mkdir -p /data/models /data/qlib_data /data/uploads /data/strategies \
+    /data/sector-memberships /tmp \
     && mkdir -p /root/.qlib/qlib_data
 # Qlib features 符号链接在运行时由 entrypoint 或首次访问时创建（数据卷挂载后才存在）
 

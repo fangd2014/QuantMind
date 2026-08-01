@@ -522,6 +522,7 @@ export const STRATEGY_NAME_MAP: Record<string, string> = {
   deep_time_series: '深度学习时序策略 (GRU/LSTM)',
   aggressive_topk_strategy: '激进版截面TopK策略',
   long_short_topk: '多空 TopK 策略',
+  sector_momentum_leader_core: '板块动量轮动+龙头中军选股',
 
   // 扩展分析/兼容旧版
   EnhancedIndex: '增强指数策略',

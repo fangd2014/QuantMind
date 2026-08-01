@@ -39,6 +39,10 @@ class StrategyParameter(BaseModel):
     default: Any
     min: float | None = None
     max: float | None = None
+    step: float | None = None
+    type: str | None = None
+    options: list[Any] | None = None
+    label: str | None = None
 
 
 class StrategyTemplate(BaseModel):

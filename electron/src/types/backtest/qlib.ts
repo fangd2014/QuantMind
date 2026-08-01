@@ -17,7 +17,8 @@ export type QlibStrategyType =
   | 'EnhancedIndex'
   | 'RiskParity'
   | 'StopLoss'
-  | 'VolatilityWeighted';
+  | 'VolatilityWeighted'
+  | 'sector_momentum_leader_core';
 
 /** Qlib策略参数 */
 export interface QlibStrategyParams {
@@ -50,6 +51,8 @@ export interface QlibStrategyParams {
   // 行业轮动参数
   topk_sectors?: number;
   lookback_days?: number;
+  board_universe?: string;
+  max_holding_days?: number;
 
   // 波动率加权参数
   vol_lookback?: number;

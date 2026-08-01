@@ -14,12 +14,14 @@ from backend.services.engine.qlib_app.schemas.backtest import (
     QlibOptimizationResult,
     QlibPortfolioMetrics,
     QlibStrategyParams,
+    SectorMomentumLeaderCoreParams,
 )
 
 __all__ = [
     "QlibBacktestRequest",
     "QlibBacktestResult",
     "QlibStrategyParams",
+    "SectorMomentumLeaderCoreParams",
     "QlibPortfolioMetrics",
     "HealthCheckResponse",
     "OptimizationTaskResponse",
