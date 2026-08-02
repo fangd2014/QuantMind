@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -19,6 +20,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 MODEL_SPEC_V1: dict[str, Any] = {
     "version": "1",
@@ -384,16 +387,26 @@ def _load_sw_history(cache_dir: Path, query: TushareQuery | None) -> SectorUnive
     """Load strict SW-L1 history without depending on the scripts package."""
     cache_path = cache_dir / "tushare-sw2021-l1-membership-history.json.gz"
     cached = _read_gzip_json(cache_path)
+    stale: SectorUniverse | None = None
     if (
         cached
         and cached.get("version") == SW_VERSION
         and cached.get("historical") is True
     ):
-        return validate_membership_universe(
-            cached.get("industries") or cached.get("boards") or [],
-            cached.get("memberships") or {},
-            strict=True,
-        )
+        try:
+            stale = _validate_sw_coverage(
+                cached.get("industries") or cached.get("boards") or [],
+                cached.get("memberships") or {},
+            )
+        except StrictDataError:
+            LOGGER.exception("Invalid historical SW membership cache")
+        if stale is not None:
+            cache_days = float(os.getenv("SECTOR_MEMBERSHIP_CACHE_DAYS", "30"))
+            age_days = (
+                datetime.now().timestamp() - cache_path.stat().st_mtime
+            ) / 86400
+            if age_days <= cache_days:
+                return stale
 
     query_api = query
     if query_api is None and os.getenv("TUSHARE_TOKEN", "").strip():
@@ -401,78 +414,104 @@ def _load_sw_history(cache_dir: Path, query: TushareQuery | None) -> SectorUnive
 
         query_api = query_tushare
     if query_api is None:
+        if stale is not None:
+            LOGGER.warning(
+                "SW membership cache is stale and cannot be refreshed; using stale "
+                "validated history"
+            )
+            return stale
         raise StrictDataError(
             "strict sw_l1 backtest requires a historical membership cache or "
             "TUSHARE_TOKEN"
         )
-
-    classifications = query_api(
-        "index_classify",
-        {"level": "L1", "src": SW_VERSION},
-        ("index_code", "industry_name", "level", "src"),
-    )
-    boards = sorted(
-        [
-            {
-                "code": str(row["index_code"]),
-                "name": str(row["industry_name"]),
-                "level": str(row.get("level") or "L1"),
-                "source": str(row.get("src") or SW_VERSION),
-            }
-            for row in classifications
-            if row.get("index_code") and row.get("industry_name")
-        ],
-        key=lambda row: row["code"],
-    )
-    if not 28 <= len(boards) <= 40:
-        raise StrictDataError(f"unexpected SW2021 L1 industry count: {len(boards)}")
-
-    memberships: dict[str, list[dict[str, Any]]] = {}
-    for board in boards:
-        intervals: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for is_new in ("Y", "N"):
-            rows = query_api(
-                "index_member_all",
-                {"l1_code": board["code"], "is_new": is_new},
-                (
-                    "l1_code",
-                    "l1_name",
-                    "ts_code",
-                    "name",
-                    "in_date",
-                    "out_date",
-                    "is_new",
-                ),
-            )
-            for row in rows:
-                symbol = normalize_stock_code(row.get("ts_code"))
-                if symbol is None:
-                    continue
-                item = {
-                    "symbol": symbol,
-                    "name": str(row.get("name") or row.get("ts_code") or ""),
-                    "in_date": row.get("in_date"),
-                    "out_date": row.get("out_date"),
+    try:
+        classifications = query_api(
+            "index_classify",
+            {"level": "L1", "src": SW_VERSION},
+            ("index_code", "industry_name", "level", "src"),
+        )
+        boards = sorted(
+            [
+                {
+                    "code": str(row["index_code"]),
+                    "name": str(row["industry_name"]),
+                    "level": str(row.get("level") or "L1"),
+                    "source": str(row.get("src") or SW_VERSION),
                 }
-                key = (
-                    symbol,
-                    str(item["in_date"] or ""),
-                    str(item["out_date"] or ""),
-                )
-                intervals[key] = item
-        memberships[board["code"]] = list(intervals.values())
+                for row in classifications
+                if row.get("index_code") and row.get("industry_name")
+            ],
+            key=lambda row: row["code"],
+        )
+        if not 28 <= len(boards) <= 40:
+            raise StrictDataError(
+                f"unexpected SW2021 L1 industry count: {len(boards)}"
+            )
 
+        memberships: dict[str, list[dict[str, Any]]] = {}
+        for board in boards:
+            intervals: dict[tuple[str, str, str], dict[str, Any]] = {}
+            for is_new in ("Y", "N"):
+                rows = query_api(
+                    "index_member_all",
+                    {"l1_code": board["code"], "is_new": is_new},
+                    (
+                        "l1_code",
+                        "l1_name",
+                        "ts_code",
+                        "name",
+                        "in_date",
+                        "out_date",
+                        "is_new",
+                    ),
+                )
+                for row in rows:
+                    symbol = normalize_stock_code(row.get("ts_code"))
+                    if symbol is None:
+                        continue
+                    item = {
+                        "symbol": symbol,
+                        "name": str(row.get("name") or row.get("ts_code") or ""),
+                        "in_date": row.get("in_date"),
+                        "out_date": row.get("out_date"),
+                    }
+                    key = (
+                        symbol,
+                        str(item["in_date"] or ""),
+                        str(item["out_date"] or ""),
+                    )
+                    intervals[key] = item
+            memberships[board["code"]] = list(intervals.values())
+
+        universe = _validate_sw_coverage(boards, memberships)
+        _write_gzip_json(
+            cache_path,
+            {
+                "version": SW_VERSION,
+                "historical": True,
+                "generated_at": datetime.now().astimezone().isoformat(),
+                "industries": universe.boards,
+                "memberships": universe.memberships,
+            },
+        )
+        return universe
+    except Exception:
+        if stale is None:
+            raise
+        LOGGER.exception("SW membership refresh failed; using stale historical cache")
+        return stale
+
+
+def _validate_sw_coverage(
+    boards: Sequence[Mapping[str, Any]],
+    memberships: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> SectorUniverse:
     universe = validate_membership_universe(boards, memberships, strict=True)
-    _write_gzip_json(
-        cache_path,
-        {
-            "version": SW_VERSION,
-            "historical": True,
-            "generated_at": datetime.now().astimezone().isoformat(),
-            "industries": universe.boards,
-            "memberships": universe.memberships,
-        },
-    )
+    usable = sum(bool(rows) for rows in universe.memberships.values())
+    if usable < len(universe.boards) * 0.90:
+        raise StrictDataError(
+            f"only {usable}/{len(universe.boards)} SW industries have members"
+        )
     return universe
 
 
