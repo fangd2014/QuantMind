@@ -83,6 +83,11 @@ task_logger.info(
 class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
     """Qlib 回测运行逻辑 mixin"""
 
+    @staticmethod
+    def _strategy_signal_for_log(request: QlibBacktestRequest) -> Any:
+        """返回可选的通用信号配置；专用策略可不定义 signal 字段。"""
+        return getattr(request.strategy_params, "signal", None)
+
     async def run_backtest(self, request: QlibBacktestRequest) -> QlibBacktestResult:
         """运行回测"""
         self._cleanup_stale_runs()
@@ -242,7 +247,9 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
             # --- Pool File Resolution [END] ---
 
             task_log.info(
-                "signal_raw", "原始signal配置", signal=request.strategy_params.signal
+                "signal_raw",
+                "原始signal配置",
+                signal=self._strategy_signal_for_log(request),
             )
             signal_data, signal_meta = await self._build_signal_data(request)
             self._enforce_signal_quality(signal_meta, request=request)
