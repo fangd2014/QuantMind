@@ -88,6 +88,12 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
         """返回可选的通用信号配置；专用策略可不定义 signal 字段。"""
         return getattr(request.strategy_params, "signal", None)
 
+    @staticmethod
+    def _uses_runtime_signal_placeholder(signal: Any) -> bool:
+        return isinstance(signal, str) and (
+            signal == "<PRED>" or signal.startswith("$")
+        )
+
     async def run_backtest(self, request: QlibBacktestRequest) -> QlibBacktestResult:
         """运行回测"""
         self._cleanup_stale_runs()
@@ -456,8 +462,7 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                         curr_signal = normalized_curr_signal
                 if (
                     curr_signal is None
-                    or curr_signal == "<PRED>"
-                    or (isinstance(curr_signal, str) and curr_signal.startswith("$"))
+                    or self._uses_runtime_signal_placeholder(curr_signal)
                 ) and signal_data is not None:
                     strategy["kwargs"]["signal"] = signal_data
 

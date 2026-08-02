@@ -68,6 +68,14 @@ def test_runtime_signal_logging_supports_dedicated_schema():
     assert QlibBacktestServiceRuntimeMixin._strategy_signal_for_log(request) is None
 
 
+def test_runtime_placeholder_check_does_not_coerce_dataframe_to_bool():
+    signal = pd.DataFrame({"score": [1.0]})
+
+    assert not QlibBacktestServiceRuntimeMixin._uses_runtime_signal_placeholder(signal)
+    assert QlibBacktestServiceRuntimeMixin._uses_runtime_signal_placeholder("<PRED>")
+    assert QlibBacktestServiceRuntimeMixin._uses_runtime_signal_placeholder("$close")
+
+
 def test_factory_returns_dedicated_builder_and_unknown_id_fails():
     builder, is_fallback, normalized = StrategyFactory.resolve_builder(
         "sector_momentum_leader_core"
