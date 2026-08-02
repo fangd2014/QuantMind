@@ -226,6 +226,19 @@ class TestStrategyTemplateLoader:
 
 
 class TestPublicInterface:
+    def test_project_templates_include_sector_momentum_strategy(self, monkeypatch):
+        """项目模板目录应稳定包含新增的板块动量内置策略。"""
+        monkeypatch.delenv("STRATEGY_TEMPLATES_DIR", raising=False)
+        import importlib
+
+        import backend.services.engine.qlib_app.services.strategy_templates as mod
+
+        importlib.reload(mod)
+        templates = mod.get_all_templates()
+
+        assert len(templates) == 11
+        assert any(item.id == "sector_momentum_leader_core" for item in templates)
+
     def test_get_all_templates_returns_list(self, monkeypatch, template_dir: Path):
         """公开接口 get_all_templates() 应返回非空列表。"""
         monkeypatch.setenv("STRATEGY_TEMPLATES_DIR", str(template_dir))

@@ -132,6 +132,7 @@ async def generate_strategy(payload: StrategyGenerationRequest, request: Request
         return error(ErrorCode.INTERNAL_ERROR, f"策略生成失败: {exc}")
 
 
+@router.post("/strategy/extract-config")
 @router.post("/extract-config")
 async def extract_strategy_config(request: ConfigExtractionRequest):
     """

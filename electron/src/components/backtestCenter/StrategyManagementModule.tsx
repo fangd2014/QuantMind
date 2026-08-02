@@ -32,6 +32,7 @@ import { setCurrentTab } from '../../store/slices/aiStrategySlice';
 interface Strategy {
     id: string;
     name: string;
+    is_system: boolean;
     status: 'draft' | 'repository' | 'live_trading' | 'active' | 'inactive' | 'archived';
     created_at: string;
     updated_at: string;
@@ -76,6 +77,7 @@ export const StrategyManagementModule: React.FC = () => {
             const mapped: Strategy[] = items.map((item: any) => ({
                 id: item.id,
                 name: item.name,
+                is_system: Boolean(item.is_system),
                 status: normalizeStatus(item.status),
                 created_at: item.created_at || new Date().toISOString(),
                 updated_at: item.updated_at || item.created_at || new Date().toISOString(),
@@ -101,6 +103,10 @@ export const StrategyManagementModule: React.FC = () => {
     };
 
     const handleEdit = (strategy: Strategy) => {
+        if (strategy.is_system) {
+            navigate(`/ai-ide?strategyId=${strategy.id}`);
+            return;
+        }
         if (strategy.status === 'repository') {
             Modal.confirm({
                 title: '编辑仓库策略',
@@ -118,6 +124,7 @@ export const StrategyManagementModule: React.FC = () => {
     };
 
     const handleDeleteClick = (strategy: Strategy) => {
+        if (strategy.is_system) return;
         setSelectedStrategy(strategy);
         setDeleteModalVisible(true);
     };
@@ -207,6 +214,9 @@ export const StrategyManagementModule: React.FC = () => {
                                     <div className="flex-1">
                                         <div className="flex items-center gap-3 mb-2">
                                             <h3 className="text-lg font-semibold text-gray-800">{strategy.name}</h3>
+                                            {strategy.is_system && (
+                                                <span className="px-2 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">内置</span>
+                                            )}
                                             {getStatusBadge(strategy.status)}
                                         </div>
                                         <div className="text-xs text-gray-500">
@@ -216,14 +226,17 @@ export const StrategyManagementModule: React.FC = () => {
                                 </div>
                                 <div className="flex items-center gap-2 pt-3 border-t border-gray-100">
                                     <button onClick={() => handleEdit(strategy)} className="flex items-center gap-1 px-3 py-1.5 bg-purple-50 text-purple-600 rounded-lg text-sm">
-                                        <Edit className="w-4 h-4" /> 编辑
+                                        {strategy.is_system ? <Eye className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
+                                        {strategy.is_system ? '查看' : '编辑'}
                                     </button>
                                     <button onClick={() => handleBacktest(strategy)} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-sm">
                                         <TestTube className="w-4 h-4" /> 回测验证
                                     </button>
-                                    <button onClick={() => handleDeleteClick(strategy)} className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-sm">
-                                        <Trash2 className="w-4 h-4" /> 删除
-                                    </button>
+                                    {!strategy.is_system && (
+                                        <button onClick={() => handleDeleteClick(strategy)} className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-sm">
+                                            <Trash2 className="w-4 h-4" /> 删除
+                                        </button>
+                                    )}
                                 </div>
                             </motion.div>
                         ))}

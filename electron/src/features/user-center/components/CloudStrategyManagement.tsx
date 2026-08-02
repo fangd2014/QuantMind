@@ -74,6 +74,7 @@ const CloudStrategyManagement: React.FC = () => {
     }, [user]);
 
     const handleDelete = (strategy: UserStrategy) => {
+        if (strategy.is_system) return;
         confirm({
             title: '确认删除策略?',
             icon: <ExclamationCircleOutlined />,
@@ -140,6 +141,7 @@ const CloudStrategyManagement: React.FC = () => {
                 <Space>
                     {getTypeIcon(record.strategy_type)}
                     <span className="font-medium">{text}</span>
+                    {record.is_system && <Tag color="gold">内置</Tag>}
                 </Space>
             ),
         },
@@ -166,14 +168,16 @@ const CloudStrategyManagement: React.FC = () => {
             key: 'action',
             render: (_: any, record: UserStrategy) => (
                 <Space size="middle">
-                    <Tooltip title="删除策略">
-                        <Button
-                            type="text"
-                            danger
-                            icon={<DeleteOutlined />}
-                            onClick={() => handleDelete(record)}
-                        />
-                    </Tooltip>
+                    {!record.is_system && (
+                        <Tooltip title="删除策略">
+                            <Button
+                                type="text"
+                                danger
+                                icon={<DeleteOutlined />}
+                                onClick={() => handleDelete(record)}
+                            />
+                        </Tooltip>
+                    )}
                 </Space>
             ),
         },

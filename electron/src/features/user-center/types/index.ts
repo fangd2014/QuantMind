@@ -73,6 +73,7 @@ export type StrategyStatus =
 
 export interface UserStrategy {
   id: string;
+  is_system?: boolean;
   user_id: string;
   strategy_id: string;
   name: string;

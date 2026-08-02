@@ -91,6 +91,7 @@ interface RemoteStrategy {
     tags?: string[];
     created_at?: string | null;
     updated_at?: string | null;
+    is_system?: boolean;
 }
 
 const AI_IDE_UNAVAILABLE_HINTS = [
@@ -467,7 +468,8 @@ const AIIDEPage: React.FC = () => {
                 description: item.description,
                 tags: item.tags,
                 created_at: item.created_at,
-                updated_at: item.updated_at
+                updated_at: item.updated_at,
+                is_system: item.is_system,
             }));
             setRemoteStrategies(remoteItems);
         } catch (err: any) {
@@ -567,6 +569,10 @@ const AIIDEPage: React.FC = () => {
         } else {
             // 远程策略保存逻辑
             if (!selectedRemote) return;
+            if (selectedRemote.is_system) {
+                message.info('内置策略为只读，无法保存修改');
+                return;
+            }
             setIsSaving(true);
             try {
                 await strategyManagementService.updateStrategy(selectedRemote.id, {
@@ -2352,6 +2358,9 @@ const AIIDEPage: React.FC = () => {
                                         )}>
                                             {item.name || item.id}
                                         </span>
+                                        {item.is_system && (
+                                            <span className="w-fit rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">内置</span>
+                                        )}
                                         {item.updated_at && (
                                             <span className="text-[10px] text-gray-400">更新: {item.updated_at}</span>
                                         )}
@@ -2439,7 +2448,7 @@ const AIIDEPage: React.FC = () => {
                             scrollBeyondLastLine: false,
                             automaticLayout: true,
                             padding: { top: 24, bottom: 16 },
-                            readOnly: activeTab === 'local' ? !selectedFile : !selectedRemote
+                            readOnly: activeTab === 'local' ? !selectedFile : !selectedRemote || Boolean(selectedRemote.is_system)
                         }}
                     />
                 </div>
@@ -2525,11 +2534,20 @@ const AIIDEPage: React.FC = () => {
                             </button>
                             <button
                                 onClick={handleSave}
+                                disabled={isSaving || (activeTab === 'remote' && (!selectedRemote || selectedRemote.is_system))}
                                 className={clsx(
                                     "p-1.5 rounded-lg transition-colors group relative",
-                                    isSaving ? "text-green-600 bg-green-50" : "text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                    isSaving
+                                        ? "text-green-600 bg-green-50"
+                                        : activeTab === 'remote' && (!selectedRemote || selectedRemote.is_system)
+                                            ? "text-gray-300 cursor-not-allowed"
+                                            : "text-gray-500 hover:bg-gray-100 hover:text-gray-900"
                                 )}
-                                title={activeTab === 'local' ? "保存本地文件 (Cmd+S)" : "保存云端修改 (Cmd+S)"}
+                                title={activeTab === 'local'
+                                    ? "保存本地文件 (Cmd+S)"
+                                    : selectedRemote?.is_system
+                                        ? "内置策略为只读"
+                                        : "保存云端修改 (Cmd+S)"}
                             >
                                 <Save className="h-4 w-4" />
                                 {isSaving && (

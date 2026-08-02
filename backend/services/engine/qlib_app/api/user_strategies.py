@@ -22,15 +22,22 @@ from sqlalchemy import text
 try:
     from backend.shared.database_manager_v2 import get_session
     from backend.shared.redis_sentinel_client import get_redis_sentinel_client
-    from backend.shared.strategy_storage import get_strategy_storage_service
+    from backend.shared.strategy_storage import (
+        get_strategy_storage_service,
+        normalize_strategy_type,
+    )
     from backend.shared.utils import normalize_user_id
 except ImportError:
     from shared.database_manager_v2 import get_session  # type: ignore
-    from shared.strategy_storage import get_strategy_storage_service  # type: ignore
+    from shared.strategy_storage import (  # type: ignore
+        get_strategy_storage_service,
+        normalize_strategy_type,
+    )
     from shared.redis_sentinel_client import get_redis_sentinel_client  # type: ignore
     from shared.utils import normalize_user_id  # type: ignore
 
 from backend.services.engine.qlib_app.services.strategy_templates import (
+    StrategyTemplate,
     get_all_templates,
     invalidate_templates_cache,
 )
@@ -355,11 +362,100 @@ class StrategyListItem(BaseModel):
     is_verified: bool = False
     is_system: bool = False
     parameters: dict[str, Any] = Field(default_factory=dict)
+    execution_config: dict[str, Any] = Field(default_factory=dict)
+    execution_defaults: dict[str, Any] = Field(default_factory=dict)
+    live_trade_config: dict[str, Any] = Field(default_factory=dict)
+    live_defaults: dict[str, Any] = Field(default_factory=dict)
+    live_config_tips: list[str] = Field(default_factory=list)
 
 
 class StrategyListResponse(BaseModel):
     total: int
     strategies: list[StrategyListItem]
+
+
+class SaveStrategyRequest(BaseModel):
+    name: str
+    code: str
+    description: str = ""
+    category: str = "manual_created"
+    strategy_type: str | None = None
+    author: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(default_factory=dict)
+    execution_config: dict[str, Any] = Field(default_factory=dict)
+    is_public: bool = False
+
+
+class UpdateStrategyRequest(BaseModel):
+    name: str | None = None
+    code: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    parameters: dict[str, Any] | None = None
+    config: dict[str, Any] | None = None
+    execution_config: dict[str, Any] | None = None
+
+
+def _template_default_parameters(template: StrategyTemplate) -> dict[str, Any]:
+    """将模板参数定义转换为可直接执行和编辑的默认参数。"""
+    return {
+        "strategy_type": template.id,
+        **{parameter.name: parameter.default for parameter in template.params},
+    }
+
+
+def _build_system_template_items(
+    templates: list[StrategyTemplate],
+    *,
+    category: str | None = None,
+    search: str | None = None,
+    tags: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """把文件系统模板映射为稳定、不可删除的系统策略列表项。"""
+    normalized_category = str(category or "").strip().lower()
+    normalized_search = str(search or "").strip().lower()
+    requested_tags = {
+        str(tag).strip().lower() for tag in tags or [] if str(tag).strip()
+    }
+    items: list[dict[str, Any]] = []
+
+    for template in templates:
+        template_tags = [template.category, template.difficulty, "system", "template"]
+        normalized_template_tags = {tag.lower() for tag in template_tags}
+        if normalized_category and template.category.lower() != normalized_category:
+            continue
+        if normalized_search and normalized_search not in " ".join(
+            (template.id, template.name, template.description)
+        ).lower():
+            continue
+        if requested_tags and not requested_tags.issubset(normalized_template_tags):
+            continue
+
+        items.append(
+            {
+                "id": f"sys_{template.id}",
+                "name": template.name,
+                "description": template.description,
+                "status": "ACTIVE",
+                "category": template.category,
+                "tags": template_tags,
+                "code": template.code,
+                "cos_url": None,
+                "is_verified": True,
+                "is_system": True,
+                "parameters": _template_default_parameters(template),
+                "execution_config": template.execution_defaults,
+                "execution_defaults": template.execution_defaults,
+                "live_trade_config": template.live_defaults,
+                "live_defaults": template.live_defaults,
+                "live_config_tips": template.live_config_tips,
+                "created_at": None,
+                "updated_at": None,
+            }
+        )
+    return items
 
 
 async def _fetch_real_trading_status(request: Request) -> dict[str, Any] | None:
@@ -395,6 +491,51 @@ async def _fetch_real_trading_status(request: Request) -> dict[str, Any] | None:
 # ============================================================================
 
 
+@router.post("")
+async def create_user_strategy(payload: SaveStrategyRequest, request: Request):
+    """保存用户策略到统一策略存储。"""
+    user_id = _get_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未认证")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="策略名称不能为空")
+    if not payload.code.strip():
+        raise HTTPException(status_code=422, detail="策略代码不能为空")
+
+    try:
+        result = await get_strategy_storage_service().save(
+            user_id=user_id,
+            name=name,
+            code=payload.code,
+            metadata={
+                "description": payload.description,
+                "strategy_type": normalize_strategy_type(payload.strategy_type),
+                "status": "DRAFT",
+                "config": {"category": payload.category, **payload.config},
+                "parameters": payload.parameters,
+                "execution_config": payload.execution_config,
+                "tags": payload.tags,
+                "is_public": payload.is_public,
+                "is_verified": False,
+            },
+        )
+        strategy_id = str(result["id"])
+        return {
+            "success": True,
+            "id": strategy_id,
+            "strategy_id": strategy_id,
+            "message": "策略已保存到个人中心",
+            **result,
+        }
+    except Exception as e:
+        StructuredTaskLogger(
+            logger, "user-strategies", {"user_id": user_id}
+        ).exception("create_failed", "保存策略失败", error=e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("", response_model=StrategyListResponse)
 async def list_user_strategies(
     request: Request,
@@ -402,7 +543,7 @@ async def list_user_strategies(
     search: str | None = Query(None),
     tags: str | None = Query(None),
 ):
-    """获取当前用户的策略列表。如果是新用户则自动初始化模板。"""
+    """获取当前用户策略，并始终合并文件系统中的内置模板。"""
     try:
         user_id = _get_user_id(request)
         if not user_id:
@@ -412,13 +553,24 @@ async def list_user_strategies(
         tag_list = tags.split(",") if tags else None
         tenant_id = _get_tenant_id(request)
 
-        items = svc.list(user_id=user_id, category=category, search=search, tags=tag_list)
+        stored_items = svc.list(
+            user_id=user_id, category=category, search=search, tags=tag_list
+        )
+        personal_items = [
+            item
+            for item in stored_items
+            if "systemsync"
+            not in {
+                str(tag).strip().lower() for tag in (item.get("tags") or [])
+            }
+        ]
+        items = _build_system_template_items(
+            get_all_templates(), category=category, search=search, tags=tag_list
+        ) + personal_items
 
-        if not items and not search and not tags:
-            await _perform_sync(user_id)
-            items = svc.list(user_id=user_id)
-
-        backtest_summaries = await _fetch_latest_backtest_summaries(user_id=user_id, tenant_id=tenant_id)
+        backtest_summaries = await _fetch_latest_backtest_summaries(
+            user_id=user_id, tenant_id=tenant_id
+        )
         trading_status = await _fetch_real_trading_status(request)
         runtime_state = _normalize_runtime_state((trading_status or {}).get("status"))
         strategy_payload = (trading_status or {}).get("strategy") if isinstance(trading_status, dict) else {}
@@ -507,9 +659,12 @@ async def list_user_strategies(
                     today_pnl=today_pnl,
                     risk_level=risk_level,
                     created_at=item.get("created_at"),
-                    updated_at=item["updated_at"],
-                    tags=item["tags"],
-                    is_verified=item["is_verified"],
+                    updated_at=item.get("updated_at"),
+                    category=item.get("category") or "db_stored",
+                    tags=item.get("tags") or [],
+                    code=item.get("code") or "",
+                    is_verified=bool(item.get("is_verified")),
+                    is_system=bool(item.get("is_system")),
                     cos_url=item.get("cos_url"),
                     last_update=summary.get("last_update"),
                     error_code=summary.get("error_code"),
@@ -518,6 +673,11 @@ async def list_user_strategies(
                     last_signal_at=summary.get("created_at"),
                     execution_latency_ms=execution_latency_ms,
                     parameters=item.get("parameters") or {},
+                    execution_config=item.get("execution_config") or {},
+                    execution_defaults=item.get("execution_defaults") or {},
+                    live_trade_config=item.get("live_trade_config") or {},
+                    live_defaults=item.get("live_defaults") or {},
+                    live_config_tips=item.get("live_config_tips") or [],
                 )
             )
 
@@ -586,6 +746,87 @@ async def get_strategy_detail(strategy_id: str, request: Request):
         raise
     except Exception as e:
         StructuredTaskLogger(logger, "user-strategies").exception("detail_failed", "获取策略详情失败", error=e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{strategy_id}")
+async def update_user_strategy(
+    strategy_id: str, payload: UpdateStrategyRequest, request: Request
+):
+    """更新个人策略；修改代码后重新回到待验证草稿状态。"""
+    user_id = _get_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未认证")
+    if strategy_id.startswith("sys_"):
+        raise HTTPException(status_code=400, detail="系统内置策略不可修改")
+    if not strategy_id.isdigit():
+        raise HTTPException(status_code=404, detail="策略不存在")
+
+    svc = get_strategy_storage_service()
+    current = await svc.get(strategy_id, user_id=user_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="策略不存在或无权修改")
+
+    name = payload.name.strip() if payload.name is not None else current["name"]
+    code = payload.code if payload.code is not None else current.get("code", "")
+    if not name:
+        raise HTTPException(status_code=422, detail="策略名称不能为空")
+    if not str(code).strip():
+        raise HTTPException(status_code=422, detail="策略代码不能为空")
+
+    code_changed = payload.code is not None and payload.code != current.get("code")
+    try:
+        result = await svc.save(
+            user_id=user_id,
+            strategy_id=strategy_id,
+            name=name,
+            code=code,
+            metadata={
+                "description": (
+                    payload.description
+                    if payload.description is not None
+                    else current.get("description", "")
+                ),
+                "strategy_type": current.get("strategy_type") or "CUSTOM",
+                "status": "DRAFT" if code_changed else current.get("status", "DRAFT"),
+                "config": (
+                    payload.config
+                    if payload.config is not None
+                    else current.get("config", {})
+                ),
+                "parameters": (
+                    payload.parameters
+                    if payload.parameters is not None
+                    else current.get("parameters", {})
+                ),
+                "execution_config": (
+                    payload.execution_config
+                    if payload.execution_config is not None
+                    else current.get("execution_config", {})
+                ),
+                "tags": (
+                    payload.tags
+                    if payload.tags is not None
+                    else current.get("tags", [])
+                ),
+                "is_public": bool(current.get("is_public", False)),
+                "is_verified": (
+                    False
+                    if code_changed
+                    else bool(current.get("is_verified", False))
+                ),
+            },
+        )
+        updated = await svc.get(result["id"], user_id=user_id)
+        return updated or {"id": str(result["id"]), "strategy_id": str(result["id"])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        StructuredTaskLogger(
+            logger,
+            "user-strategies",
+            {"strategy_id": strategy_id, "user_id": user_id},
+        ).exception("update_failed", "更新策略失败", error=e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
