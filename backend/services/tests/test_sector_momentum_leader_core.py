@@ -4,6 +4,7 @@ import builtins
 import gzip
 import json
 import math
+import os
 
 import numpy as np
 import pandas as pd
@@ -129,10 +130,112 @@ def test_sw_loader_reads_historical_cache_without_scripts_package(
 
     monkeypatch.setattr(builtins, "__import__", reject_scripts_import)
 
-    universe = load_sector_universe("sw_l1", tmp_path)
+    def reject_query(*_args, **_kwargs):
+        raise AssertionError("fresh cache must not be refreshed")
+
+    universe = load_sector_universe("sw_l1", tmp_path, query=reject_query)
 
     assert universe.boards[0]["code"] == "801010.SI"
     assert universe.memberships["801010.SI"][0]["symbol"] == "SH600000"
+
+
+def _sw_query_fixture(api_name, params, _fields):
+    if api_name == "index_classify":
+        return [
+            {
+                "index_code": f"80{index:04d}.SI",
+                "industry_name": f"行业{index}",
+                "level": "L1",
+                "src": "SW2021",
+            }
+            for index in range(28)
+        ]
+    index = int(str(params["l1_code"])[2:6])
+    if params["is_new"] == "N":
+        return []
+    return [
+        {
+            "ts_code": f"{600000 + index}.SH",
+            "name": f"股票{index}",
+            "in_date": "20200101",
+            "out_date": None,
+        }
+    ]
+
+
+def test_sw_loader_refreshes_expired_cache(tmp_path) -> None:
+    cache_path = tmp_path / "tushare-sw2021-l1-membership-history.json.gz"
+    with gzip.open(cache_path, "wt", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "version": "SW2021",
+                "historical": True,
+                "industries": [{"code": "OLD.SI", "name": "旧行业"}],
+                "memberships": {
+                    "OLD.SI": [
+                        {
+                            "symbol": "600000.SH",
+                            "in_date": "20200101",
+                            "out_date": None,
+                        }
+                    ]
+                },
+            },
+            handle,
+        )
+    os.utime(cache_path, (0, 0))
+
+    universe = load_sector_universe("sw_l1", tmp_path, query=_sw_query_fixture)
+
+    assert len(universe.boards) == 28
+    assert universe.boards[0]["code"] != "OLD.SI"
+
+
+def test_sw_loader_falls_back_to_validated_stale_cache(tmp_path) -> None:
+    cache_path = tmp_path / "tushare-sw2021-l1-membership-history.json.gz"
+    with gzip.open(cache_path, "wt", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "version": "SW2021",
+                "historical": True,
+                "industries": [{"code": "OLD.SI", "name": "旧行业"}],
+                "memberships": {
+                    "OLD.SI": [
+                        {
+                            "symbol": "600000.SH",
+                            "in_date": "20200101",
+                            "out_date": None,
+                        }
+                    ]
+                },
+            },
+            handle,
+        )
+    os.utime(cache_path, (0, 0))
+
+    def failing_query(*_args, **_kwargs):
+        raise RuntimeError("upstream unavailable")
+
+    universe = load_sector_universe("sw_l1", tmp_path, query=failing_query)
+
+    assert [board["code"] for board in universe.boards] == ["OLD.SI"]
+
+
+def test_sw_loader_rejects_incomplete_refresh_without_overwriting_cache(
+    tmp_path,
+) -> None:
+    cache_path = tmp_path / "tushare-sw2021-l1-membership-history.json.gz"
+
+    def incomplete_query(api_name, params, fields):
+        rows = _sw_query_fixture(api_name, params, fields)
+        if api_name == "index_member_all" and params["l1_code"] != "800000.SI":
+            return []
+        return rows
+
+    with pytest.raises(StrictDataError, match="only 1/28"):
+        load_sector_universe("sw_l1", tmp_path, query=incomplete_query)
+
+    assert not cache_path.exists()
 
 
 def test_ths_loader_keeps_new_and_old_members(tmp_path) -> None:
@@ -328,6 +431,14 @@ def test_stock_validation_rejects_partial_missing_liquidity() -> None:
     raw.loc[raw.index[0], "volume"] = np.nan
 
     with pytest.raises(StrictDataError, match="missing only together"):
+        validate_stock_daily(raw)
+
+
+def test_stock_validation_rejects_nonflat_missing_liquidity() -> None:
+    raw, _, _ = _stock_rows(days=2)
+    raw.loc[raw.index[0], ["volume", "amount"]] = np.nan
+
+    with pytest.raises(StrictDataError, match="flat-price"):
         validate_stock_daily(raw)
 
 
