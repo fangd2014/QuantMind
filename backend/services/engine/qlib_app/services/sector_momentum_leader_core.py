@@ -284,7 +284,7 @@ def _read_gzip_json(path: Path) -> dict[str, Any] | None:
     try:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             payload = json.load(handle)
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
