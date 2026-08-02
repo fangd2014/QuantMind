@@ -188,6 +188,8 @@ async def test_runtime_reads_local_daily_data_and_aligns_all_inputs_once(
     assert isinstance(payload, SectorSignalPayload)
     assert captured["read_only"] is True
     assert "FROM stock_daily_latest" in captured["sql"]
+    assert captured["parameters"]["end_date"] == pd.Timestamp("2026-01-09").date()
+    assert hasattr(captured["parameters"]["start_date"], "toordinal")
     assert captured["stock_daily"].iloc[0]["symbol"] == "SH600000"
     assert captured["universe"] == (
         "sw_l1",
