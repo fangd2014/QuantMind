@@ -1261,6 +1261,7 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
             pd.Timestamp(request.start_date)
             - pd.Timedelta(days=int(params["lookback_days"]) * 2 + 30)
         ).date()
+        query_end = pd.Timestamp(request.end_date).date()
         async with get_session(read_only=True) as session:
             result = await session.execute(
                 text(
@@ -1268,7 +1269,7 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                     "WHERE trade_date BETWEEN :start_date AND :end_date "
                     "ORDER BY trade_date, symbol"
                 ),
-                {"start_date": lookback_start, "end_date": request.end_date},
+                {"start_date": lookback_start, "end_date": query_end},
             )
             stock_daily = pd.DataFrame(result.mappings().all())
         if stock_daily.empty:
