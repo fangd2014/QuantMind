@@ -30,6 +30,8 @@ MODEL_SPEC_V1: dict[str, Any] = {
     "phase_priority": ("retreat", "overheated", "diffusion", "launch", "watch"),
 }
 
+SW_VERSION = "SW2021"
+
 DEFAULT_PARAMS: dict[str, Any] = {
     "board_universe": "sw_l1",
     "topk_sectors": 10,
@@ -378,6 +380,102 @@ def _load_ths_history(cache_dir: Path, query: TushareQuery | None) -> SectorUniv
     )
 
 
+def _load_sw_history(cache_dir: Path, query: TushareQuery | None) -> SectorUniverse:
+    """Load strict SW-L1 history without depending on the scripts package."""
+    cache_path = cache_dir / "tushare-sw2021-l1-membership-history.json.gz"
+    cached = _read_gzip_json(cache_path)
+    if (
+        cached
+        and cached.get("version") == SW_VERSION
+        and cached.get("historical") is True
+    ):
+        return validate_membership_universe(
+            cached.get("industries") or cached.get("boards") or [],
+            cached.get("memberships") or {},
+            strict=True,
+        )
+
+    query_api = query
+    if query_api is None and os.getenv("TUSHARE_TOKEN", "").strip():
+        from scripts.analysis.concept_rotation_report import query_tushare
+
+        query_api = query_tushare
+    if query_api is None:
+        raise StrictDataError(
+            "strict sw_l1 backtest requires a historical membership cache or "
+            "TUSHARE_TOKEN"
+        )
+
+    classifications = query_api(
+        "index_classify",
+        {"level": "L1", "src": SW_VERSION},
+        ("index_code", "industry_name", "level", "src"),
+    )
+    boards = sorted(
+        [
+            {
+                "code": str(row["index_code"]),
+                "name": str(row["industry_name"]),
+                "level": str(row.get("level") or "L1"),
+                "source": str(row.get("src") or SW_VERSION),
+            }
+            for row in classifications
+            if row.get("index_code") and row.get("industry_name")
+        ],
+        key=lambda row: row["code"],
+    )
+    if not 28 <= len(boards) <= 40:
+        raise StrictDataError(f"unexpected SW2021 L1 industry count: {len(boards)}")
+
+    memberships: dict[str, list[dict[str, Any]]] = {}
+    for board in boards:
+        intervals: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for is_new in ("Y", "N"):
+            rows = query_api(
+                "index_member_all",
+                {"l1_code": board["code"], "is_new": is_new},
+                (
+                    "l1_code",
+                    "l1_name",
+                    "ts_code",
+                    "name",
+                    "in_date",
+                    "out_date",
+                    "is_new",
+                ),
+            )
+            for row in rows:
+                symbol = normalize_stock_code(row.get("ts_code"))
+                if symbol is None:
+                    continue
+                item = {
+                    "symbol": symbol,
+                    "name": str(row.get("name") or row.get("ts_code") or ""),
+                    "in_date": row.get("in_date"),
+                    "out_date": row.get("out_date"),
+                }
+                key = (
+                    symbol,
+                    str(item["in_date"] or ""),
+                    str(item["out_date"] or ""),
+                )
+                intervals[key] = item
+        memberships[board["code"]] = list(intervals.values())
+
+    universe = validate_membership_universe(boards, memberships, strict=True)
+    _write_gzip_json(
+        cache_path,
+        {
+            "version": SW_VERSION,
+            "historical": True,
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "industries": universe.boards,
+            "memberships": universe.memberships,
+        },
+    )
+    return universe
+
+
 def load_sector_universe(
     board_universe: str,
     cache_dir: str | Path,
@@ -396,17 +494,7 @@ def load_sector_universe(
     root = Path(cache_dir)
     if kind == "ths_concept":
         return _load_ths_history(root, query)
-    try:
-        from scripts.analysis.leading_control_backtest import (
-            load_historical_sw_industry_universe,
-        )
-
-        boards, memberships = load_historical_sw_industry_universe(root, query=query)
-    except Exception as exc:
-        raise StrictDataError(
-            f"strict sw_l1 backtest requires historical membership intervals: {exc}"
-        ) from exc
-    return validate_membership_universe(boards, memberships, strict=True)
+    return _load_sw_history(root, query)
 
 
 def validate_stock_daily(
