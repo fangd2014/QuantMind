@@ -542,6 +542,31 @@ def validate_stock_daily(
     ):
         if column not in frame:
             frame[column] = np.nan
+
+    audit: dict[str, Any] = {"adjusted_prices": "derived_or_verified", "issues": []}
+    liquidity_missing = frame["volume"].isna() | frame["amount"].isna()
+    if liquidity_missing.any():
+        flat_price = (
+            frame["open"].eq(frame["high"])
+            & frame["high"].eq(frame["low"])
+            & frame["low"].eq(frame["close"])
+        )
+        suspended_missing = (
+            frame["volume"].isna() & frame["amount"].isna() & flat_price
+        )
+        if not suspended_missing.equals(liquidity_missing):
+            raise StrictDataError(
+                "volume/amount may be missing only together on flat-price "
+                "suspension rows"
+            )
+        frame.loc[suspended_missing, ["volume", "amount"]] = 0.0
+        audit["suspension_liquidity_filled"] = int(suspended_missing.sum())
+
+    missing_is_st = frame["is_st"].isna()
+    if missing_is_st.any():
+        frame.loc[missing_is_st, "is_st"] = 1.0
+        audit["missing_is_st_excluded"] = int(missing_is_st.sum())
+
     if "is_suspended" not in frame:
         frame["is_suspended"] = frame["volume"] <= 0
     core_numeric = [
@@ -581,7 +606,6 @@ def validate_stock_daily(
                 )
         else:
             frame[column] = expected
-    audit: dict[str, Any] = {"adjusted_prices": "derived_or_verified", "issues": []}
     if "turnover_rate" in frame and frame["turnover_rate"].notna().any():
         finite = frame.loc[frame["turnover_rate"].notna(), "turnover_rate"]
         if (finite < 0).any() or not np.isfinite(finite).all():

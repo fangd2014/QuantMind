@@ -296,6 +296,41 @@ def test_stock_validation_derives_adjusted_prices_and_converts_turnover() -> Non
     assert audit["turnover_unit_conversion"] == "percent_to_decimal"
 
 
+def test_stock_validation_handles_suspension_and_unknown_st_conservatively() -> None:
+    raw, _, _ = _stock_rows(days=2)
+    suspension_index = raw.index[0]
+    st_unknown_index = raw.index[1]
+    close = raw.loc[suspension_index, "close"]
+    raw.loc[suspension_index, ["open", "high", "low", "close"]] = close
+    raw.loc[suspension_index, ["volume", "amount"]] = np.nan
+    raw.loc[st_unknown_index, "is_st"] = np.nan
+
+    clean, audit = validate_stock_daily(raw)
+
+    suspension = clean.loc[
+        (clean["trade_date"] == raw.loc[suspension_index, "trade_date"])
+        & (clean["symbol"] == raw.loc[suspension_index, "symbol"])
+    ].iloc[0]
+    unknown_st = clean.loc[
+        (clean["trade_date"] == raw.loc[st_unknown_index, "trade_date"])
+        & (clean["symbol"] == raw.loc[st_unknown_index, "symbol"])
+    ].iloc[0]
+    assert suspension["volume"] == 0
+    assert suspension["amount"] == 0
+    assert bool(suspension["is_suspended"]) is True
+    assert unknown_st["is_st"] == 1
+    assert audit["suspension_liquidity_filled"] == 1
+    assert audit["missing_is_st_excluded"] == 1
+
+
+def test_stock_validation_rejects_partial_missing_liquidity() -> None:
+    raw, _, _ = _stock_rows(days=2)
+    raw.loc[raw.index[0], "volume"] = np.nan
+
+    with pytest.raises(StrictDataError, match="missing only together"):
+        validate_stock_daily(raw)
+
+
 def test_stock_validation_rejects_bad_adjustment() -> None:
     raw, _, _ = _stock_rows(days=2)
     raw["adj_close"] = raw["close"] * 2
