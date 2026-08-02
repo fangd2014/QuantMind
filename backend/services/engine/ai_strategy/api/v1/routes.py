@@ -109,6 +109,30 @@ def _resolve_provider(provider_name: str | None = None):
     return get_provider()
 
 
+@router.post("/strategy/generate")
+async def generate_strategy(payload: StrategyGenerationRequest, request: Request):
+    """兼容旧版前端的策略生成接口。"""
+    try:
+        provider = _resolve_provider(payload.provider)
+        result = await provider.generate(payload)
+
+        generated_at = result.generated_at.isoformat() if hasattr(result.generated_at, "isoformat") else str(result.generated_at)
+        return success(
+            {
+                "strategy_name": result.strategy_name,
+                "rationale": result.rationale,
+                "artifacts": [artifact.model_dump() if hasattr(artifact, "model_dump") else artifact for artifact in result.artifacts],
+                "metadata": result.metadata.model_dump() if hasattr(result.metadata, "model_dump") else result.metadata,
+                "provider": result.provider,
+                "generated_at": generated_at,
+            }
+        )
+    except Exception as exc:
+        logger.error("Strategy generation failed: %s", exc, exc_info=True)
+        return error(ErrorCode.INTERNAL_ERROR, f"策略生成失败: {exc}")
+
+
+@router.post("/strategy/extract-config")
 @router.post("/extract-config")
 async def extract_strategy_config(request: ConfigExtractionRequest):
     """
@@ -978,4 +1002,3 @@ async def share_strategy(strategy_id: str, visibility: str = "private", descript
 
     except Exception as exc:
         return error(ErrorCode.INTERNAL_ERROR, f"分享策略失败: {exc}")
-

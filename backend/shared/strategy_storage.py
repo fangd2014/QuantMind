@@ -105,6 +105,13 @@ _STATUS_ACTIVE = "ACTIVE"
 _STATUS_DRAFT = "DRAFT"
 _STATUS_LIVE_TRADING = "LIVE_TRADING"
 _STATUS_ARCHIVED = "ARCHIVED"
+_ALLOWED_STRATEGY_TYPES = {
+    "CUSTOM",
+    "TECHNICAL",
+    "FUNDAMENTAL",
+    "QUANTITATIVE",
+    "MIXED",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +202,14 @@ def _normalize_lifecycle_status(status: str) -> str:
         return _STATUS_ARCHIVED
     # 保持兼容：未知状态按传入值大写写入
     return str(status or _STATUS_DRAFT).strip().upper() or _STATUS_DRAFT
+
+
+def normalize_strategy_type(value: Any) -> str:
+    """将外部策略分类约束为数据库 strategytype 枚举。"""
+    normalized = str(value or "").strip().upper()
+    if normalized in _ALLOWED_STRATEGY_TYPES:
+        return normalized
+    return "CUSTOM"
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +326,10 @@ class StrategyStorageService:
 
         now = datetime.now(timezone.utc)
         tags = _parse_tags(metadata.get("tags", []))
-        description = metadata.get("description") or f"Updated ({now.strftime('%Y-%m-%d %H:%M')})"
-        strategy_type = metadata.get("strategy_type") or "CUSTOM"
+        description = metadata.get("description") or (
+            f"Updated ({now.strftime('%Y-%m-%d %H:%M')})"
+        )
+        strategy_type = normalize_strategy_type(metadata.get("strategy_type"))
         status = metadata.get("status") or _STATUS_DRAFT
         config = metadata.get("config") or {}
         parameters = metadata.get("parameters") or {}
@@ -354,6 +371,7 @@ class StrategyStorageService:
                 sql = f"""
                     UPDATE strategies SET
                         name = :name, description = :desc,
+                        strategy_type = :stype, status = :status,
                         code = :code, cos_url = :cos_url,
                         { "cos_key = :cos_key," if has_cos_key else "" }
                         code_hash = :code_hash, file_size = :file_size,
@@ -361,6 +379,7 @@ class StrategyStorageService:
                         parameters = CAST(:params AS jsonb),
                         execution_config = CAST(:exec_config AS jsonb),
                         tags = :tags,
+                        is_public = :is_public, is_verified = :is_verified,
                         updated_at = :now
                     WHERE id = :sid AND user_id = :uid
                 """
@@ -432,6 +451,13 @@ class StrategyStorageService:
                 template = get_template_by_id(real_template_id)
 
                 if template:
+                    parameters = {
+                        "strategy_type": real_template_id,
+                        **{
+                            parameter.name: parameter.default
+                            for parameter in template.params
+                        },
+                    }
                     return {
                         "id": strategy_id,
                         "user_id": "system",
@@ -439,8 +465,21 @@ class StrategyStorageService:
                         "description": template.description,
                         "code": template.code,
                         "is_verified": True,
-                        "parameters": {"strategy_type": real_template_id, "topk": 50, "signal": "<PRED>"},
-                        "tags": ["system", "template"],
+                        "is_system": True,
+                        "category": template.category,
+                        "difficulty": template.difficulty,
+                        "parameters": parameters,
+                        "execution_config": template.execution_defaults,
+                        "execution_defaults": template.execution_defaults,
+                        "live_trade_config": template.live_defaults,
+                        "live_defaults": template.live_defaults,
+                        "live_config_tips": template.live_config_tips,
+                        "tags": [
+                            template.category,
+                            template.difficulty,
+                            "system",
+                            "template",
+                        ],
                     }
             except Exception as e:
                 logger.warning(f"加载系统模板 {strategy_id} 失败: {e}")
@@ -474,11 +513,15 @@ class StrategyStorageService:
                 "user_id": str(row[1]),
                 "name": row[2],
                 "description": row[3],
+                "strategy_type": row[4],
+                "status": row[5],
+                "config": row[6] or {},
                 "code": row[8],
                 "cos_url": row[9],
                 "cos_key": row[10],
                 "is_verified": bool(row[17]),
                 "execution_config": row[18] or {},
+                "is_public": bool(row[14]),
                 "tags": _parse_tags(row[13]),
                 "parameters": row[7] or {},
             }
@@ -566,7 +609,8 @@ class StrategyStorageService:
             cos_key_expr = "cos_key" if has_cos_key else "NULL::text as cos_key"
             sql = f"""
                 SELECT id, name, description, status, cos_url, {cos_key_expr},
-                       code_hash, tags, is_verified, execution_config, created_at, updated_at
+                       code_hash, tags, is_verified, execution_config, parameters,
+                       created_at, updated_at
                 FROM strategies WHERE user_id = :uid AND status != '{_STATUS_ARCHIVED}'
             """
             rows = session.execute(text(sql), {"uid": uid_int}).fetchall()
@@ -579,9 +623,10 @@ class StrategyStorageService:
                     "cos_url": r[4],
                     "is_verified": bool(r[8]),
                     "execution_config": r[9] or {},
+                    "parameters": r[10] or {},
                     "tags": _parse_tags(r[7]),
-                    "created_at": r[10].isoformat() if r[10] else None,
-                    "updated_at": r[11].isoformat() if r[11] else None,
+                    "created_at": r[11].isoformat() if r[11] else None,
+                    "updated_at": r[12].isoformat() if r[12] else None,
                 }
                 for r in rows
             ]
