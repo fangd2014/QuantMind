@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import builtins
+import gzip
+import json
 import math
 
 import numpy as np
@@ -92,6 +95,44 @@ def test_membership_strict_failures_reject_missing_dates_and_overlap() -> None:
                 ]
             },
         )
+
+
+def test_sw_loader_reads_historical_cache_without_scripts_package(
+    tmp_path, monkeypatch
+) -> None:
+    cache_path = tmp_path / "tushare-sw2021-l1-membership-history.json.gz"
+    with gzip.open(cache_path, "wt", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "version": "SW2021",
+                "historical": True,
+                "industries": [{"code": "801010.SI", "name": "农林牧渔"}],
+                "memberships": {
+                    "801010.SI": [
+                        {
+                            "symbol": "600000.SH",
+                            "in_date": "20200101",
+                            "out_date": None,
+                        }
+                    ]
+                },
+            },
+            handle,
+        )
+
+    original_import = builtins.__import__
+
+    def reject_scripts_import(name, *args, **kwargs):
+        if name == "scripts" or name.startswith("scripts."):
+            raise AssertionError(f"unexpected scripts import: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_scripts_import)
+
+    universe = load_sector_universe("sw_l1", tmp_path)
+
+    assert universe.boards[0]["code"] == "801010.SI"
+    assert universe.memberships["801010.SI"][0]["symbol"] == "SH600000"
 
 
 def test_ths_loader_keeps_new_and_old_members(tmp_path) -> None:
