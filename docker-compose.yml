@@ -111,6 +111,7 @@ services:
       - STORAGE_ROOT=/data
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
       - SECTOR_MEMBERSHIP_CACHE_DIR=${SECTOR_MEMBERSHIP_CACHE_DIR:-/data/sector-memberships}
+      - SECTOR_MEMBERSHIP_CACHE_DAYS=${SECTOR_MEMBERSHIP_CACHE_DAYS:-30}
 
       # 融资融券股票池文件路径（容器内）
       - MARGIN_STOCK_POOL_PATH=/data/融资融券.json
@@ -241,6 +242,7 @@ services:
       - STORAGE_ROOT=/data
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
       - SECTOR_MEMBERSHIP_CACHE_DIR=${SECTOR_MEMBERSHIP_CACHE_DIR:-/data/sector-memberships}
+      - SECTOR_MEMBERSHIP_CACHE_DAYS=${SECTOR_MEMBERSHIP_CACHE_DAYS:-30}
 
       # 融资融券股票池文件路径（容器内）
       - MARGIN_STOCK_POOL_PATH=/data/融资融券.json
