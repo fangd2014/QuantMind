@@ -110,6 +110,7 @@ services:
       - STORAGE_ROOT=/data
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
       - SECTOR_MEMBERSHIP_CACHE_DIR=${SECTOR_MEMBERSHIP_CACHE_DIR:-/data/sector-memberships}
+      - SECTOR_MEMBERSHIP_CACHE_DAYS=${SECTOR_MEMBERSHIP_CACHE_DAYS:-30}
 
       # 训练期间资源保护：训练开始时 stop 非保护容器以释放内存，结束后自动恢复。
       # 受保护前缀（按容器名前缀匹配，不会被停止）：quantmind* 和 qm-train-* 自身，
@@ -340,6 +341,7 @@ services:
       - STORAGE_ROOT=/data
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
       - SECTOR_MEMBERSHIP_CACHE_DIR=${SECTOR_MEMBERSHIP_CACHE_DIR:-/data/sector-memberships}
+      - SECTOR_MEMBERSHIP_CACHE_DAYS=${SECTOR_MEMBERSHIP_CACHE_DAYS:-30}
 
       # 融资融券股票池文件路径（容器内）
       - MARGIN_STOCK_POOL_PATH=/data/融资融券.json
