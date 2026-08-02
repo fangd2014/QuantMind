@@ -62,6 +62,12 @@ def test_request_uses_dedicated_schema_and_forces_safe_execution():
     assert request.signal_lag_days == 1
 
 
+def test_runtime_signal_logging_supports_dedicated_schema():
+    request = _request()
+
+    assert QlibBacktestServiceRuntimeMixin._strategy_signal_for_log(request) is None
+
+
 def test_factory_returns_dedicated_builder_and_unknown_id_fails():
     builder, is_fallback, normalized = StrategyFactory.resolve_builder(
         "sector_momentum_leader_core"
