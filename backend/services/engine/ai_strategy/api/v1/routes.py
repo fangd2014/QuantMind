@@ -172,6 +172,8 @@ async def generate_strategy(payload: StrategyGenerationRequest, request: Request
                 "generated_at": generated_at,
             }
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Strategy generation failed: %s", exc, exc_info=True)
         return error(ErrorCode.INTERNAL_ERROR, f"策略生成失败: {exc}")

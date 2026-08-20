@@ -78,7 +78,8 @@ def test_strategy_generate_uses_profile_key_with_request_scoped_deepseek(monkeyp
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["success"] is True
+    assert body["code"] == 0
+    assert body["data"]["strategy_name"] == "S1"
     assert captured["lookup_user_id"] == "user-1"
     assert captured["provider_api_key"] == "profile-real-key"
     assert captured["provider_user_id"] == "user-1"

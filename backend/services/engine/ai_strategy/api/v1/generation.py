@@ -578,6 +578,8 @@ async def scan_remote_strategies(body: ScanRemoteRequest, request: Request):
                 )
 
         return {"success": True, "items": candidates}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Scan remote strategies failed: %s", e, exc_info=True)
         return {"success": False, "error": f"扫描失败: {e}"}
@@ -673,6 +675,8 @@ async def import_remote_strategies(body: ImportRemoteRequest, request: Request):
             "failed": failed_count,
             "message": f"成功导入 {success_count} 个策略，失败 {failed_count} 个",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Batch import failed: %s", e, exc_info=True)
         return {"success": False, "error": f"导入失败: {e}"}
@@ -766,6 +770,8 @@ async def list_remote_strategies(request: Request, user_id: str):
                     }
                 )
         return {"success": True, "items": items}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("List remote strategies failed: %s", e, exc_info=True)
         return {"success": False, "error": f"列表获取失败: {e}"}
@@ -857,6 +863,8 @@ async def get_remote_strategy(strategy_id: str, request: Request, user_id: str |
                     "source": "ai_strategy_cloud",
                 },
             }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Get remote strategy failed: %s", e, exc_info=True)
         return {"success": False, "error": f"获取失败: {e}"}
