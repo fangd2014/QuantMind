@@ -75,7 +75,10 @@ FRONTEND_CONFIG.md
 AGENTS.md
 
 # Large non-essential directories
-models/
+# Only exclude the repository-level model artifacts.  An unanchored
+# "models/" also drops Python packages such as
+# backend/services/trade/simulation/models from the Docker build context.
+/models/
 alphaagent/
 go-stock/
 TradingAgents-astock/
