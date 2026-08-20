@@ -147,7 +147,7 @@ export const OtherSettings: React.FC<OtherSettingsProps> = ({ userId, tenantId }
 
           <div className="text-[11px] text-gray-400 space-y-0.5 pt-1 border-t border-gray-100">
             <p>• API Key 安全存储在您的个人档案中</p>
-            <p>• 获取 Key：<a href="https://bailian.console.aliyun.com/" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">阿里云百炼控制台</a></p>
+            <p>• 获取 Key：<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">DeepSeek 开放平台</a></p>
           </div>
         </div>
       </div>

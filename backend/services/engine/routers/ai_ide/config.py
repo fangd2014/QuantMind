@@ -82,8 +82,6 @@ async def save_llm_config(request: Request, config: LLMConfig):
     tenant_id = user.get("tenant_id", "default")
 
     new_key = config.deepseek_api_key.strip()
-    if not new_key:
-        raise HTTPException(status_code=400, detail="API Key 不能为空")
 
     api_gateway = _get_api_gateway_url()
 
@@ -108,7 +106,8 @@ async def save_llm_config(request: Request, config: LLMConfig):
                     status_code=resp.status_code, detail="同步到用户服务失败"
                 )
 
-        return {"success": True, "message": "配置已成功同步到个人档案"}
+        message = "API Key 已清除" if not new_key else "配置已成功同步到个人档案"
+        return {"success": True, "message": message}
     except HTTPException:
         raise
     except Exception as e:
