@@ -17,6 +17,7 @@ try:
 except Exception:
     xcals = None
 
+from backend.shared.qlib_paths import resolve_qlib_provider_uri
 from backend.shared.trading_calendar import calendar_service
 
 from .model_management_utils import _scan_feature_snapshots_status
@@ -60,6 +61,8 @@ _XCALS_MARKET_MAP: dict[str, str] = {
 
 
 def _resolve_qlib_dir(market: str) -> Path:
+    if market == "a_share":
+        return Path(resolve_qlib_provider_uri("CN"))
     return _MARKET_QLIB_DIRS.get(market, _MARKET_QLIB_DIRS["a_share"])
 
 
