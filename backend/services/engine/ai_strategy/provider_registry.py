@@ -37,7 +37,7 @@ except Exception as e:
 
 def get_provider_name() -> str:
     """获取当前配置的提供商名称"""
-    return (os.getenv("LLM_PROVIDER") or "qwen").strip().lower()
+    return (os.getenv("LLM_PROVIDER") or "deepseek").strip().lower()
 
 
 def get_provider(name: str | None = None) -> BaseLLMProvider:

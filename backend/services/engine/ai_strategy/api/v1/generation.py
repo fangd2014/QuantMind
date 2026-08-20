@@ -286,7 +286,7 @@ async def _generate_qlib_impl(body: GenerateQlibRequest, trace_id: str | None) -
                 """
             ).strip()
 
-        llm_provider = (os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "qwen").strip().lower()
+        llm_provider = (os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "deepseek").strip().lower()
         llm_router = get_resilient_llm_router()
 
         # 从数据库获取用户配置的 API Key

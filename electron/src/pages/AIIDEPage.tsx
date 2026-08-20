@@ -178,11 +178,11 @@ const AIIDEPage: React.FC = () => {
     const [strategyLabResult, setStrategyLabResult] = React.useState<StrategyLabRunResult | null>(null);
     const [strategyLabLoading, setStrategyLabLoading] = React.useState(false);
     const [strategyLabProgress, setStrategyLabProgress] = React.useState<StrategyLabProgressEvent | null>(null);
-    const strategyLabPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+    const strategyLabPollRef = React.useRef<(() => void) | null>(null);
 
     const clearStrategyLabPoll = React.useCallback(() => {
         if (strategyLabPollRef.current) {
-            clearInterval(strategyLabPollRef.current);
+            strategyLabPollRef.current();
             strategyLabPollRef.current = null;
         }
     }, []);

@@ -23,20 +23,19 @@ class AIStrategyConfig(BaseSettings):
     DEBUG: bool = False
 
     # ============ LLM配置 ============
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "qwen")
-    LLM_MODEL: str = os.getenv("QWEN_MODEL", "qwen3.6-plus")
-    # 复用 AI_IDE_LLM_API_KEY（全项目统一 LLM 入口），失败再回退 DASHSCOPE/QWEN
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "deepseek")
+    LLM_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    # DeepSeek 为默认入口；兼容复用 AI-IDE 中配置的同一把 OpenAI-compatible key。
     LLM_API_KEY: str = (
-        os.getenv("AI_IDE_LLM_API_KEY")
-        or os.getenv("DASHSCOPE_API_KEY")
-        or os.getenv("QWEN_API_KEY", "")
+        os.getenv("DEEPSEEK_API_KEY")
+        or os.getenv("AI_IDE_LLM_API_KEY", "")
     )
-    # 优先使用 AI_IDE_LLM_BASE_URL（与 AI_IDE 一致），否则用官方 OpenAI 兼容模式 base_url
+    # 优先使用 DeepSeek 专用地址，兼容复用 AI-IDE 的 OpenAI-compatible base URL。
     LLM_API_BASE: str = os.getenv(
-        "AI_IDE_LLM_BASE_URL"
+        "DEEPSEEK_BASE_URL"
     ) or os.getenv(
-        "DASHSCOPE_BASE_URL",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "AI_IDE_LLM_BASE_URL",
+        "https://api.deepseek.com",
     )
     LLM_TEMPERATURE: float = 0.3  # 降低随机性，提高代码质量
     LLM_MAX_TOKENS: int = 4000
@@ -130,7 +129,19 @@ class AIStrategyConfig(BaseSettings):
 
 
 class LLMProviderConfig:
-    """LLM提供商配置 - 仅支持Qwen"""
+    """LLM 提供商配置。"""
+
+    @staticmethod
+    def get_deepseek_config(base_config: AIStrategyConfig):
+        """DeepSeek 默认配置（OpenAI 兼容接口）。"""
+        return {
+            "api_key": os.getenv("DEEPSEEK_API_KEY") or os.getenv("AI_IDE_LLM_API_KEY", ""),
+            "api_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            "temperature": base_config.LLM_TEMPERATURE,
+            "max_tokens": base_config.LLM_MAX_TOKENS,
+            "timeout": base_config.LLM_TIMEOUT,
+        }
 
     @staticmethod
     def get_qwen_config(base_config: AIStrategyConfig):

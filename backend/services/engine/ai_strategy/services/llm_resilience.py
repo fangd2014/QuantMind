@@ -77,13 +77,13 @@ class ResilientLLMRouter:
 
     def _provider_order(self, preferred: str | None = None) -> list[str]:
         preferred_name = (
-            (preferred or os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "qwen").strip().lower()
+            (preferred or os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "deepseek").strip().lower()
         )
         fallback_env = os.getenv("LLM_FALLBACK_PROVIDERS", "").strip()
         if fallback_env:
             fallbacks = [x.strip().lower() for x in fallback_env.split(",") if x.strip()]
         else:
-            fallbacks = ["deepseek"] if preferred_name == "qwen" else ["qwen"]
+            fallbacks = []
 
         ordered = [preferred_name] + fallbacks
         uniq: list[str] = []

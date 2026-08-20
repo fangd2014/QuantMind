@@ -1,4 +1,22 @@
 services:
+  # Optional upstream integrations stay available behind an explicit profile.
+  # A plain `docker compose up -d` on the standalone server therefore starts
+  # only QuantMind's own five-service stack.
+  web:
+    profiles: ["extras"]
+  data-gateway:
+    profiles: ["extras"]
+  dashboard:
+    profiles: ["extras"]
+  huntly:
+    profiles: ["extras"]
+  qwenpaw:
+    profiles: ["extras"]
+  rsshub:
+    profiles: ["extras"]
+  celery-beat:
+    profiles: ["extras"]
+
   db:
     # The QuantMind schema contains PostGIS geometry columns. Use the same
     # PostgreSQL/extension image as the source so a logical restore keeps the

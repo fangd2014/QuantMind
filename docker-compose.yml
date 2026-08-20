@@ -186,6 +186,7 @@ services:
 
       # DeepSeek API (用于 AI-IDE 和 AI 策略功能)
       # 使用 mock key 允许服务启动，用户可在个人中心配置真实 API key
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-mock-api-key-not-configured}
       - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
@@ -366,17 +367,15 @@ services:
       # 回测进度回调地址（OSS 模式使用 quantmind 容器名）
       - BACKTEST_PROGRESS_URL=http://quantmind:8001
 
-      # Qwen/DashScope API (mock key 允许启动，用户需配置真实 key)
-      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-mock-api-key-not-configured}
-      - QWEN_API_KEY=${QWEN_API_KEY:-mock-api-key-not-configured}
-      # DeepSeek API (用于 TradingAgents 等)
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-your-deepseek-api-key}
+      # DeepSeek API（Celery 与主服务保持一致）
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-mock-api-key-not-configured}
       - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
 
-      # AI-IDE Chat LLM 配置（OpenAI 兼容；默认 MiMo）
-      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
-      - AI_IDE_LLM_MODEL=${AI_IDE_LLM_MODEL:-mimo-v2.5-pro}
+      # AI-IDE Chat LLM 配置（OpenAI 兼容；默认 DeepSeek）
+      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://api.deepseek.com}
+      - AI_IDE_LLM_MODEL=${AI_IDE_LLM_MODEL:-deepseek-chat}
       - AI_IDE_LLM_API_KEY=${AI_IDE_LLM_API_KEY:-mock-api-key-not-configured}
 
       # QuantDB SDK（数据同步 + 特征快照生成）

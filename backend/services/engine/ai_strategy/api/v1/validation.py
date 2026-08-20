@@ -86,7 +86,7 @@ async def repair_qlib_code(body: RepairQlibRequest):
     """使用大模型尝试修复 Qlib 策略代码的语法/结构问题"""
     try:
         validator = get_qlib_validator()
-        provider_name = (os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "qwen").strip().lower()
+        provider_name = (os.getenv("LLM_PROVIDER_FORCE") or os.getenv("LLM_PROVIDER") or "deepseek").strip().lower()
         llm_router = get_resilient_llm_router()
 
         code = _strip_markdown_fences(body.code)

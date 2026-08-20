@@ -61,6 +61,17 @@ def _request() -> Request:
     return request
 
 
+def test_strategy_update_route_is_registered_once():
+    matching = [
+        route
+        for route in user_strategies.router.routes
+        if route.path == "/{strategy_id}" and "PUT" in (route.methods or set())
+    ]
+
+    assert len(matching) == 1
+    assert matching[0].endpoint is user_strategies.update_user_strategy
+
+
 def test_system_template_items_include_all_file_templates_and_defaults():
     templates = get_all_templates()
 

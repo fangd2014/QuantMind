@@ -151,14 +151,15 @@ backend/ai_strategy/
 在项目根目录 `.env` 文件中配置：
 
 ```env
-# 选择模型提供商（qwen 或 deepseek）
-LLM_PROVIDER=qwen
+# 默认模型提供商（需要回退到 Qwen 时才显式改为 qwen）
+LLM_PROVIDER=deepseek
 
 # 仅在迁移窗口需要时启用 legacy 路由（生产建议保持 false）
 AI_STRATEGY_ENABLE_LEGACY_ROUTES=false
 
 # LLM 弹性调度（第二周）
-LLM_FALLBACK_PROVIDERS=deepseek
+# 默认不隐式回退到其他供应商；如需回退可显式填写 qwen
+LLM_FALLBACK_PROVIDERS=
 LLM_PROVIDER_MAX_RETRIES=2
 LLM_RETRY_BASE_SECONDS=0.5
 LLM_CIRCUIT_FAILURE_THRESHOLD=3
@@ -172,18 +173,15 @@ ENGINE_DISABLE_MOCK=true
 # 关闭后 save-to-cloud 仅上传 COS，不再同步 strategy-service
 STRATEGY_SYNC_ENABLED=true
 
-# Qwen (千问) 配置 - 必需
-QWEN_API_KEY=your_qwen_api_key_here  # ⚠️ 必需
-QWEN_MODEL=qwen-max
-QWEN_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_MAX_TOKENS=4000
-QWEN_TEMPERATURE=0.3
-
-# DeepSeek 配置（当 LLM_PROVIDER=deepseek）
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
+# DeepSeek 配置 - 必需
+DEEPSEEK_API_KEY=your_deepseek_api_key_here  # ⚠️ 必需
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_API_URL=https://api.deepseek.com
 DEEPSEEK_BASE_URL=https://api.deepseek.com  # 兼容旧配置，优先使用 DEEPSEEK_API_URL
+
+# Qwen 仅作为显式选择的可选供应商
+QWEN_API_KEY=
+QWEN_MODEL=qwen-max
 
 # 阿里云 DashScope 配置 - 向量化引擎
 DASHSCOPE_API_KEY=your_dashscope_api_key_here
@@ -200,8 +198,9 @@ AI_STRATEGY_DB_URL=postgresql+asyncpg://user:password@host:5432/database
 AI_STRATEGY_WARMUP=true
 ```
 
-**注意**: 
-- `QWEN_API_KEY` 和 `DASHSCOPE_API_KEY` 通常使用同一个阿里云 API Key
+**注意**:
+- 策略生成默认只调用 DeepSeek；不会因为 DeepSeek 失败而隐式切回 Qwen。
+- DashScope 变量仅供仍使用阿里云向量化引擎的可选模块使用，不参与默认聊天/策略生成链路。
 - 数据库密码禁止使用默认值（如 `postgres:password`），启动时会检测并拒绝
 
 ## 数据库架构

@@ -136,7 +136,7 @@ async def dispatch_internal_strategy_order(
                 .where(
                     and_(
                         Portfolio.tenant_id == tenant,
-                        Portfolio.user_id == uid,
+                        Portfolio.user_id == str(uid),
                         Portfolio.status == "active",
                     )
                 )
