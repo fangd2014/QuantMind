@@ -1,0 +1,89 @@
+services:
+  db:
+    # The QuantMind schema contains PostGIS geometry columns. Use the same
+    # PostgreSQL/extension image as the source so a logical restore keeps the
+    # full schema while the database remains an independent container.
+    image: paradedb/paradedb:v0.22.2-pg17
+    ports: !override
+      - "127.0.0.1:15432:5432"
+
+  redis:
+    ports: !override
+      - "127.0.0.1:16379:6379"
+
+  quantmind:
+    ports: !override
+      - "18000:8000"
+      - "18001:8001"
+      - "18002:8002"
+      - "18003:8003"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DATABASE_URL: "postgresql+asyncpg://${DB_USER:-quantmind}:${DB_PASSWORD}@db:5432/${DB_NAME:-quantmind}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      REDIS_DB_BROKER: 1
+      REDIS_DB_TRADE: 2
+      REDIS_DB_BACKEND: 2
+      REDIS_DB_MARKET: 3
+      REDIS_DB_ENGINE: 5
+      REDIS_CACHE_DB: 5
+      SIGNAL_STREAM_REDIS_DB: 0
+      EXEC_STREAM_REDIS_DB: 0
+      NOTIFICATION_REDIS_DB: 0
+      TRADE_EVENTS_REDIS_DB: 2
+    networks: !override
+      - quantmind-net
+
+  celery-worker:
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DATABASE_URL: "postgresql+asyncpg://${DB_USER:-quantmind}:${DB_PASSWORD}@db:5432/${DB_NAME:-quantmind}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      REDIS_DB_BROKER: 1
+      REDIS_DB_TRADE: 2
+      REDIS_DB_BACKEND: 2
+      REDIS_DB_MARKET: 3
+      REDIS_DB_ENGINE: 5
+      REDIS_CACHE_DB: 5
+      SIGNAL_STREAM_REDIS_DB: 0
+      EXEC_STREAM_REDIS_DB: 0
+      NOTIFICATION_REDIS_DB: 0
+      TRADE_EVENTS_REDIS_DB: 2
+    networks: !override
+      - quantmind-net
+
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: quantmind-frontend
+    depends_on:
+      quantmind:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend-dist:/usr/share/nginx/html/quantmind:ro
+      - ./docker/frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - quantmind-net
+
+volumes:
+  # Versioned names avoid overwriting the stale standalone volumes found on
+  # the server and provide an immediate rollback target during migration.
+  postgres-data:
+    name: quantmind_postgres-data-v2
+  redis-data:
+    name: quantmind_redis-data-v2
