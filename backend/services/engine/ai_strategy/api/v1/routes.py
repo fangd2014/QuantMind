@@ -23,7 +23,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from backend.services.engine.auth_context import (
+    assert_identity_not_spoofed,
+    get_authenticated_identity,
+)
 from ...core.extractor import StrategyConfigExtractor
+from ...llm.deepseek import DeepseekProvider
 from ...models import (
     BatchValidationRequest,
     ChatRequest,
@@ -109,11 +114,51 @@ def _resolve_provider(provider_name: str | None = None):
     return get_provider()
 
 
+async def _load_profile_api_key(user_id: str) -> str | None:
+    if not user_id:
+        return None
+    try:
+        async with get_session(read_only=True) as session:
+            result = await session.execute(
+                text("SELECT api_key FROM user_profiles WHERE user_id = :user_id LIMIT 1"),
+                {"user_id": user_id},
+            )
+            row = result.fetchone()
+    except Exception as exc:
+        logger.warning("load user profile api key failed: user_id=%s err=%s", user_id, exc)
+        return None
+
+    api_key = str(row[0]).strip() if row and row[0] else ""
+    return api_key or None
+
+
+async def _resolve_generation_provider(
+    *,
+    request: Request,
+    payload: StrategyGenerationRequest,
+):
+    auth_user_id, auth_tenant_id = get_authenticated_identity(request)
+    assert_identity_not_spoofed(
+        auth_user_id=auth_user_id,
+        auth_tenant_id=auth_tenant_id,
+        provided_user_id=getattr(payload, "user_id", None),
+    )
+    payload.user_id = auth_user_id
+
+    effective_provider = (payload.provider or get_provider_name()).strip().lower()
+    if effective_provider == "deepseek":
+        api_key = await _load_profile_api_key(auth_user_id)
+        return DeepseekProvider(api_key=api_key), auth_user_id
+
+    return _resolve_provider(effective_provider), auth_user_id
+
+
 @router.post("/strategy/generate")
 async def generate_strategy(payload: StrategyGenerationRequest, request: Request):
     """兼容旧版前端的策略生成接口。"""
     try:
-        provider = _resolve_provider(payload.provider)
+        provider, auth_user_id = await _resolve_generation_provider(request=request, payload=payload)
+        payload.user_id = auth_user_id
         result = await provider.generate(payload)
 
         generated_at = result.generated_at.isoformat() if hasattr(result.generated_at, "isoformat") else str(result.generated_at)

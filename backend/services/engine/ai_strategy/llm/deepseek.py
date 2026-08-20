@@ -120,9 +120,9 @@ class DeepseekProvider(BaseLLMProvider):
 
     name: str = "deepseek"
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None):
         try:
-            self.llm = DeepseekLLM()
+            self.llm = DeepseekLLM(api_key=api_key)
         except Exception as e:
             logger.warning(f"Failed to initialize DeepseekLLM: {e}")
             self.llm = None

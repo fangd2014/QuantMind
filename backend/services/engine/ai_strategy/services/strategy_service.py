@@ -26,8 +26,8 @@ class StrategyService:
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "qwen-max",
+        api_url: str = "https://api.deepseek.com",
+        model: str = "deepseek-chat",
     ):
         """
         初始化策略服务
@@ -443,13 +443,16 @@ def get_strategy_service() -> StrategyService:
         from ..ai_strategy_config import LLMProviderConfig, get_config
 
         config = get_config()
-        # 优先使用 Qwen 配置
-        qwen_config = LLMProviderConfig.get_qwen_config(config)
+        provider_name = (getattr(config, "LLM_PROVIDER", None) or "deepseek").strip().lower()
+        if provider_name == "qwen":
+            provider_config = LLMProviderConfig.get_qwen_config(config)
+        else:
+            provider_config = LLMProviderConfig.get_deepseek_config(config)
 
         _strategy_service = StrategyService(
-            api_key=qwen_config["api_key"],
-            api_url=qwen_config["api_url"],
-            model=qwen_config["model"],
+            api_key=provider_config["api_key"],
+            api_url=provider_config["api_url"],
+            model=provider_config["model"],
         )
     return _strategy_service
 

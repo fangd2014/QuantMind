@@ -14,6 +14,11 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
 
+from backend.services.engine.auth_context import (
+    assert_identity_not_spoofed,
+    get_authenticated_identity,
+)
+
 try:
     from backend.shared.database_pool import get_db
 except ImportError:
@@ -59,6 +64,23 @@ def _trace_id(request: Request | None) -> str | None:
         or request.headers.get("X-Trace-Id")
         or request.headers.get("X-Request-Id")
     )
+
+
+def _resolve_authenticated_user_id(request: Request, provided_user_id: str | None = None) -> str:
+    auth_user_id, auth_tenant_id = get_authenticated_identity(request)
+    assert_identity_not_spoofed(
+        auth_user_id=auth_user_id,
+        auth_tenant_id=auth_tenant_id,
+        provided_user_id=provided_user_id,
+    )
+    return auth_user_id
+
+
+def _assert_cos_key_belongs_to_user(*, object_key: str, user_id: str) -> None:
+    normalized_key = (object_key or "").strip().lstrip("/")
+    expected_prefix = f"user_strategies/{user_id}/"
+    if not normalized_key.startswith(expected_prefix):
+        raise HTTPException(status_code=403, detail="未授权：COS 文件不属于当前用户")
 
 
 async def _cleanup_expired_qlib_tasks() -> None:
@@ -449,14 +471,14 @@ async def _generate_qlib_impl(body: GenerateQlibRequest, trace_id: str | None) -
 
 @router.post("/generate-qlib", response_model=GenerateQlibResponse)
 async def generate_qlib(body: GenerateQlibRequest, request: Request):
+    body.user_id = _resolve_authenticated_user_id(request, body.user_id)
     return await _generate_qlib_impl(body, _trace_id(request))
 
 
 @router.post("/generate-qlib/async", response_model=GenerateQlibTaskSubmitResponse)
 async def submit_generate_qlib_task(body: GenerateQlibRequest, request: Request):
-    auth_user_id = str(getattr(request.state, "user", {}).get("user_id") or "").strip()
-    if auth_user_id and auth_user_id != body.user_id:
-        raise HTTPException(status_code=403, detail="未授权：user_id 与认证身份不匹配")
+    auth_user_id = _resolve_authenticated_user_id(request, body.user_id)
+    body.user_id = auth_user_id
 
     task_id = uuid4().hex
     trace_id = _trace_id(request)
@@ -467,7 +489,7 @@ async def submit_generate_qlib_task(body: GenerateQlibRequest, request: Request)
         {
             "task_id": task_id,
             "status": "pending",
-            "user_id": body.user_id,
+            "user_id": auth_user_id,
             "tenant_id": tenant_id,
             "trace_id": trace_id,
             "result": None,
@@ -524,10 +546,10 @@ async def get_generate_qlib_task(task_id: str, request: Request):
 
 
 @router.post("/remote/scan")
-async def scan_remote_strategies(body: ScanRemoteRequest):
+async def scan_remote_strategies(body: ScanRemoteRequest, request: Request):
     """扫描云端未导入的策略文件"""
     try:
-        user_id = body.user_id
+        user_id = _resolve_authenticated_user_id(request, body.user_id)
         uploader = get_cos_uploader(use_mock=False)
         prefix = f"user_strategies/{user_id}/"
         cos_objects = await uploader.list_objects(prefix)
@@ -562,10 +584,13 @@ async def scan_remote_strategies(body: ScanRemoteRequest):
 
 
 @router.post("/remote/import")
-async def import_remote_strategies(body: ImportRemoteRequest):
+async def import_remote_strategies(body: ImportRemoteRequest, request: Request):
     """批量导入云端策略"""
     try:
-        user_id = body.user_id
+        user_id = _resolve_authenticated_user_id(request, body.user_id)
+        for key in body.files:
+            _assert_cos_key_belongs_to_user(object_key=key, user_id=user_id)
+
         uploader = get_cos_uploader(use_mock=False)
 
         success_count = 0
@@ -654,8 +679,9 @@ async def import_remote_strategies(body: ImportRemoteRequest):
 
 
 @router.get("/remote/list")
-async def list_remote_strategies(user_id: str):
+async def list_remote_strategies(request: Request, user_id: str):
     try:
+        user_id = _resolve_authenticated_user_id(request, user_id)
         with get_db() as session:
             items = []
             seen_ids = set()
@@ -746,8 +772,9 @@ async def list_remote_strategies(user_id: str):
 
 
 @router.get("/remote/{strategy_id}")
-async def get_remote_strategy(strategy_id: str, user_id: str | None = None):
+async def get_remote_strategy(strategy_id: str, request: Request, user_id: str | None = None):
     try:
+        auth_user_id = _resolve_authenticated_user_id(request, user_id)
         with get_db() as session:
             row = None
             try:
@@ -767,7 +794,7 @@ async def get_remote_strategy(strategy_id: str, user_id: str | None = None):
                 row = None
 
             if row:
-                if user_id and row[6] != user_id:
+                if row[6] != auth_user_id:
                     return {"success": False, "error": "无权限访问该策略"}
                 conf = row[5]
                 if isinstance(conf, str):
@@ -803,7 +830,7 @@ async def get_remote_strategy(strategy_id: str, user_id: str | None = None):
             ).fetchone()
             if not old_row:
                 return {"success": False, "error": "策略不存在"}
-            if user_id and str(old_row[1]) != str(user_id):
+            if str(old_row[1]) != auth_user_id:
                 return {"success": False, "error": "无权限访问该策略"}
             code = ""
             if old_row[5]:

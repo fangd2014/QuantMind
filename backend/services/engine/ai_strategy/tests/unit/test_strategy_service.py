@@ -21,7 +21,7 @@ class TestStrategyService:
     def test_init_with_valid_api_key(self):
         service = StrategyService(api_key="sk-test123")
         assert service.api_key == "sk-test123"
-        assert service.api_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert service.api_url == "https://api.deepseek.com"
 
     def test_init_with_custom_url(self):
         service = StrategyService(
@@ -87,7 +87,7 @@ class TestStrategyService:
 
         assert result["strategy_name"] == "测试策略"
         assert "artifacts" in result
-        assert result["provider"] == "qwen-max"
+        assert result["provider"] == "deepseek-chat"
 
     @pytest.mark.asyncio
     async def test_generate_strategy_api_error(self, monkeypatch):
@@ -133,3 +133,46 @@ class TestStrategyService:
     async def test_close(self):
         service = StrategyService(api_key="sk-test123")
         await service.close()
+
+    def test_get_strategy_service_uses_deepseek_config_by_default(self, monkeypatch):
+        from backend.services.engine.ai_strategy.services import strategy_service as service_module
+
+        service_module._strategy_service = None
+
+        class _Config:
+            LLM_PROVIDER = "deepseek"
+
+        monkeypatch.setattr(service_module, "get_config", lambda: _Config(), raising=False)
+
+        class _ProviderConfig:
+            @staticmethod
+            def get_deepseek_config(_config):
+                return {
+                    "api_key": "deepseek-key",
+                    "api_url": "https://deepseek.local",
+                    "model": "deepseek-r1",
+                }
+
+            @staticmethod
+            def get_qwen_config(_config):
+                return {
+                    "api_key": "qwen-key",
+                    "api_url": "https://qwen.local",
+                    "model": "qwen-max",
+                }
+
+        monkeypatch.setattr(
+            "backend.services.engine.ai_strategy.ai_strategy_config.get_config",
+            lambda: _Config(),
+        )
+        monkeypatch.setattr(
+            "backend.services.engine.ai_strategy.ai_strategy_config.LLMProviderConfig",
+            _ProviderConfig,
+        )
+
+        service = service_module.get_strategy_service()
+        assert service.api_key == "deepseek-key"
+        assert service.api_url == "https://deepseek.local"
+        assert service.model == "deepseek-r1"
+
+        service_module._strategy_service = None
