@@ -22,7 +22,7 @@ class StrategyManagementService {
       headers: { 'Content-Type': 'application/json' },
     });
     this.client.interceptors.request.use((config) => {
-      config.baseURL = String(SERVICE_URLS.API_GATEWAY || '').replace(/\/+$/, '');
+      config.baseURL = String(SERVICE_URLS.ENGINE_SERVICE || '').replace(/\/+$/, '');
       const token = authService.getAccessToken();
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;

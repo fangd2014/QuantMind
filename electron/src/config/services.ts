@@ -150,6 +150,15 @@ function getWebDeploymentBaseUrl(): string {
   return '';
 }
 
+function getWebEngineDeploymentBaseUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const pathname = window.location.pathname || '';
+  if (pathname.startsWith('/quantmind/') || pathname === '/quantmind') {
+    return '/quantmind-engine';
+  }
+  return '';
+}
+
 /**
  * 获取基础 URL（优先使用动态配置）
  */
@@ -207,7 +216,7 @@ export const SERVICE_URLS = {
   get STOCK_QUERY() { return getWebDeploymentBaseUrl() || normalizeBaseUrl(ENV.VITE_STOCK_QUERY_API_URL) || getBaseUrl(); },
   get TRADING() { return getWebDeploymentBaseUrl() || normalizeBaseUrl(ENV.VITE_TRADING_API_URL) || getBaseUrl(); },
   get QLIB_SERVICE() { return getWebDeploymentBaseUrl() || normalizeBaseUrl(ENV.VITE_QLIB_SERVICE_URL) || getBaseUrl(); },
-  get ENGINE_SERVICE() { return getWebDeploymentBaseUrl() || normalizeBaseUrl(ENV.VITE_ENGINE_SERVICE_URL) || getBaseUrl(); },
+  get ENGINE_SERVICE() { return getWebEngineDeploymentBaseUrl() || normalizeBaseUrl(ENV.VITE_ENGINE_SERVICE_URL) || getBaseUrl(); },
   get WEBSOCKET_MARKET() { return getWebSocketUrl(); },
 } as const;
 
