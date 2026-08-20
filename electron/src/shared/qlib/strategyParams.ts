@@ -255,6 +255,8 @@ export function getDefaultStrategyParams(
         (defaults as Record<string, unknown>)[param.name] = true;
       } else if (typeof v === 'string' && v.toLowerCase() === 'false') {
         (defaults as Record<string, unknown>)[param.name] = false;
+      } else if (typeof v === 'string') {
+        (defaults as Record<string, unknown>)[param.name] = v;
       }
     }
 

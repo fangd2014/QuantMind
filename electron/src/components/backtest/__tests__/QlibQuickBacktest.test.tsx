@@ -15,6 +15,10 @@ vi.mock('../../../stores/backtestCenterStore', () => ({
   ),
 }));
 
+vi.mock('../../../store', () => ({
+  useAppSelector: vi.fn(() => 'CN'),
+}));
+
 vi.mock('../../../features/auth/services/authService', () => ({
   authService: {
     getStoredUser: vi.fn(() => ({ id: 'user-1' })),

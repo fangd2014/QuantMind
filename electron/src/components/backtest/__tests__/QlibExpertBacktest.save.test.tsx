@@ -6,6 +6,10 @@ import { QlibExpertBacktest } from '../QlibExpertBacktest';
 const extractConfig = vi.fn();
 const saveStrategy = vi.fn();
 
+vi.mock('../../../store', () => ({
+  useAppSelector: vi.fn(() => 'CN'),
+}));
+
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value }: { value?: string }) => (
     <textarea aria-label="策略代码" readOnly value={value || ''} />
