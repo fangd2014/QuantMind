@@ -159,10 +159,12 @@ services:
       - HOST_PROJECT_PATH=${HOST_PROJECT_PATH:-/opt/quantmind}
       - QUANTMIND_API_BASE_URL=${QUANTMIND_API_BASE_URL:-http://quantmind:8000}
 
-      # Qwen/DashScope API (用于 AI 策略功能)
-      # 使用 mock key 允许服务启动，用户需在个人中心配置真实 API key
-      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-mock-api-key-not-configured}
-      - QWEN_API_KEY=${QWEN_API_KEY:-mock-api-key-not-configured}
+      # DeepSeek API (用于 AI-IDE 和 AI 策略功能)
+      # 使用 mock key 允许服务启动，用户可在个人中心配置真实 API key
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-mock-api-key-not-configured}
+      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://api.deepseek.com}
+      - AI_IDE_LLM_MODEL=${AI_IDE_LLM_MODEL:-deepseek-chat}
+      - AI_IDE_LLM_API_KEY=${AI_IDE_LLM_API_KEY:-}
 
       # 市值单位配置：数据库存储单位为元，1亿=100,000,000
       - AI_STRATEGY_TOTAL_MV_PER_YI=100000000.0

@@ -374,11 +374,14 @@ async def chat_completions(request: Request, item: ChatRequest):
         os.getenv("AI_IDE_LLM_BASE_URL")
         or os.getenv("AI_IDE_BASE_URL")
         or os.getenv("OPENAI_API_BASE")
-        or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        or "https://api.deepseek.com"
     )
-    model = os.getenv("AI_IDE_LLM_MODEL") or os.getenv("AI_IDE_MODEL") or "qwen-max"
+    model = (
+        os.getenv("AI_IDE_LLM_MODEL") or os.getenv("AI_IDE_MODEL") or "deepseek-chat"
+    )
     api_key = (
         os.getenv("AI_IDE_LLM_API_KEY")
+        or os.getenv("DEEPSEEK_API_KEY")
         or os.getenv("AI_IDE_API_KEY")
         or os.getenv("OPENAI_API_KEY", "")
     )
@@ -389,10 +392,11 @@ async def chat_completions(request: Request, item: ChatRequest):
         user_id = user_context.get("user_id")
         try:
             from sqlalchemy import text
+
             async with get_session(read_only=True) as session:
                 result = await session.execute(
                     text("SELECT api_key FROM user_profiles WHERE user_id = :user_id"),
-                    {"user_id": user_id}
+                    {"user_id": user_id},
                 )
                 row = result.fetchone()
                 if row and row[0]:

@@ -90,7 +90,7 @@ export const OtherSettings: React.FC<OtherSettingsProps> = ({ userId, tenantId }
             </div>
             <div>
               <h3 className="text-sm font-semibold text-gray-800">AI 服务配置</h3>
-              <p className="text-[11px] text-gray-500">Qwen API Key，用于 AI-IDE 和策略生成</p>
+              <p className="text-[11px] text-gray-500">DeepSeek API Key，用于 AI-IDE 和策略生成</p>
             </div>
           </div>
 

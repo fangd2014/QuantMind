@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 class LLMConfig(BaseModel):
-    qwen_api_key: str
+    deepseek_api_key: str
 
 
 def _get_user_info(request: Request):
@@ -50,7 +50,9 @@ async def get_llm_config(request: Request):
                 "X-Tenant-Id": tenant_id,
             }
             # 调用 Gateway 的 profiles 接口获取详情
-            resp = await client.get(f"{api_gateway}/api/v1/profiles/{user_id}", headers=headers)
+            resp = await client.get(
+                f"{api_gateway}/api/v1/profiles/{user_id}", headers=headers
+            )
             if resp.status_code == 200:
                 body = resp.json()
                 data = body.get("data", {})
@@ -63,7 +65,9 @@ async def get_llm_config(request: Request):
                     "masked_key": masked,
                 }
             else:
-                logger.warning(f"Failed to fetch profile: {resp.status_code} {resp.text}")
+                logger.warning(
+                    f"Failed to fetch profile: {resp.status_code} {resp.text}"
+                )
     except Exception as e:
         logger.error(f"Failed to fetch profile for user {user_id}: {e}")
 
@@ -77,7 +81,7 @@ async def save_llm_config(request: Request, config: LLMConfig):
     user_id = user["user_id"]
     tenant_id = user.get("tenant_id", "default")
 
-    new_key = config.qwen_api_key.strip()
+    new_key = config.deepseek_api_key.strip()
     if not new_key:
         raise HTTPException(status_code=400, detail="API Key 不能为空")
 
@@ -97,8 +101,12 @@ async def save_llm_config(request: Request, config: LLMConfig):
                 json={"api_key": new_key},
             )
             if resp.status_code != 200:
-                logger.error(f"Failed to update profile for user {user_id}: {resp.text}")
-                raise HTTPException(status_code=resp.status_code, detail="同步到用户服务失败")
+                logger.error(
+                    f"Failed to update profile for user {user_id}: {resp.text}"
+                )
+                raise HTTPException(
+                    status_code=resp.status_code, detail="同步到用户服务失败"
+                )
 
         return {"success": True, "message": "配置已成功同步到个人档案"}
     except HTTPException:

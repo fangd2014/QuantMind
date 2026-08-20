@@ -786,7 +786,7 @@ export class UserCenterService extends BaseApiClient {
    * 保存 LLM API Key
    */
   async saveLLMConfig(apiKey: string): Promise<{ success: boolean; message?: string }> {
-    return this.post('/ai-ide/config/llm', { qwen_api_key: apiKey });
+    return this.post('/ai-ide/config/llm', { deepseek_api_key: apiKey });
   }
 
 
