@@ -774,21 +774,19 @@ export class UserCenterService extends BaseApiClient {
   /**
    * 获取 LLM 配置状态
    */
-  async getLLMConfig(): Promise<{ has_key: boolean; masked_key: string; model: string; base_url: string }> {
+  async getLLMConfig(): Promise<{ has_key: boolean; masked_key: string }> {
     const response = await this.get<any>('/ai-ide/config/llm');
     return {
       has_key: response?.has_key || false,
       masked_key: response?.masked_key || '',
-      model: response?.model || '',
-      base_url: response?.base_url || '',
     };
   }
 
   /**
-   * 保存 LLM 配置 (API Key + Model + Base URL)
+   * 保存 LLM API Key
    */
-  async saveLLMConfig(apiKey: string, model?: string, baseUrl?: string): Promise<{ success: boolean; message?: string }> {
-    return this.post('/ai-ide/config/llm', { qwen_api_key: apiKey, model, base_url: baseUrl });
+  async saveLLMConfig(apiKey: string): Promise<{ success: boolean; message?: string }> {
+    return this.post('/ai-ide/config/llm', { deepseek_api_key: apiKey });
   }
 
 

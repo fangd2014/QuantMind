@@ -77,21 +77,23 @@ pip install "pandas<2.0.0" "numpy<2.0.0" akshare "scikit-learn<1.6.0" matplotlib
 
 AI-IDE 聊天接口在运行时会动态刷新 API Key，优先级如下：
 
-1. `AI_IDE_DATA_DIR/config.json` 中的 `qwen_api_key`
-2. 环境变量 `AI_IDE_API_KEY`
-3. 环境变量 `OPENAI_API_KEY`
+1. `AI_IDE_DATA_DIR/config.json` 中的 `deepseek_api_key`
+2. 环境变量 `AI_IDE_LLM_API_KEY`
+3. 环境变量 `DEEPSEEK_API_KEY`
+4. 环境变量 `AI_IDE_API_KEY`
+5. 环境变量 `OPENAI_API_KEY`
 
 这样在桌面端通过“设置”保存 Key 后，无需重启应用即可生效，并且重启后仍可恢复。
 
 ## LLM 默认配置
 
-- 默认 `base_url`：`https://dashscope.aliyuncs.com/compatible-mode/v1`
-- 默认 `model`：`qwen-plus`
+- 默认 `base_url`：`https://api.deepseek.com`
+- 默认 `model`：`deepseek-chat`
 - 可通过环境变量覆盖：
   - `AI_IDE_BASE_URL`
   - `AI_IDE_MODEL`
 
-说明：当前桌面端设置页以 Qwen Key 为主，因此后端默认切换为 Qwen 兼容模式；若使用其他供应商，请显式设置上述环境变量。
+说明：当前桌面端设置页使用 DeepSeek Key；如需切换其他 OpenAI 兼容供应商，请显式设置上述环境变量。
 
 ## 运行镜像与 Smoke 配置
 

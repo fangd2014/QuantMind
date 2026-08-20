@@ -184,39 +184,30 @@ services:
       - TRAINING_AUTODL_GPUS=${TRAINING_AUTODL_GPUS:-all}
       - TRAINING_MASTER_HOST=${TRAINING_MASTER_HOST:-}
 
-      # Qwen/DashScope API (用于 AI 策略功能)
-      # 使用 mock key 允许服务启动，用户需在个人中心配置真实 API key
-      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-mock-api-key-not-configured}
-      - QWEN_API_KEY=${QWEN_API_KEY:-mock-api-key-not-configured}
-      # DeepSeek API (用于 TradingAgents 等)
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-your-deepseek-api-key}
+      # DeepSeek API (用于 AI-IDE 和 AI 策略功能)
+      # 使用 mock key 允许服务启动，用户可在个人中心配置真实 API key
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-mock-api-key-not-configured}
       - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
-      # 选股意图解析复用 AI_IDE LLM 配置（OpenAI 兼容）
-      - AI_IDE_LLM_API_KEY=${AI_IDE_LLM_API_KEY:-mock-api-key-not-configured}
-      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
-
-      # AI-IDE Chat LLM 配置（OpenAI 兼容；默认 MiMo）
-      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
-      - AI_IDE_LLM_MODEL=${AI_IDE_LLM_MODEL:-mimo-v2.5-pro}
-      - AI_IDE_LLM_API_KEY=${AI_IDE_LLM_API_KEY:-mock-api-key-not-configured}
+      - AI_IDE_LLM_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://api.deepseek.com}
+      - AI_IDE_LLM_MODEL=${AI_IDE_LLM_MODEL:-deepseek-chat}
+      - AI_IDE_LLM_API_KEY=${AI_IDE_LLM_API_KEY:-}
 
       # RD-Agent / AlphaAgent 使用 OpenAI 兼容 API（复用 AI_IDE 配置）
-      # 模型名称由 .env 的 AI_IDE_LLM_MODEL 决定；默认 mimo-v2.5-pro
-      - CHAT_MODEL=${AI_IDE_LLM_MODEL:-mimo-v2.5-pro}
+      - CHAT_MODEL=${AI_IDE_LLM_MODEL:-deepseek-chat}
       # AlphaAgent reasoning_flag 默认 True → 用 reasoning_model；
       # 如果为空则发 model="" 导致 400。镜像 CHAT_MODEL 即可。
-      - REASONING_MODEL=${AI_IDE_LLM_MODEL:-mimo-v2.5-pro}
+      - REASONING_MODEL=${AI_IDE_LLM_MODEL:-deepseek-chat}
       # 关闭 streaming — reasoning 模型的 reasoning_content chunk 导致 OpenAI SDK JSON 解析失败
       - CHAT_STREAM=false
-      - OPENAI_API_KEY=${AI_IDE_LLM_API_KEY:-mock-api-key-not-configured}
-      - OPENAI_API_BASE=${AI_IDE_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
+      - OPENAI_API_KEY=${AI_IDE_LLM_API_KEY:-}
+      - OPENAI_API_BASE=${AI_IDE_LLM_BASE_URL:-https://api.deepseek.com}
       # AlphaAgent LLM 重试配置（502/429 等临时错误需更多重试）
       - MAX_RETRY=30
       - RETRY_WAIT_SECONDS=5
       # AlphaAgent reads OPENAI_BASE_URL (modern SDK convention); duplicate
       # OPENAI_API_BASE here so its factor-mining subprocess hits the right host.
-      - OPENAI_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
+      - OPENAI_BASE_URL=${AI_IDE_LLM_BASE_URL:-https://api.deepseek.com}
 
       # AlphaAgent 因子去重用 embedding；MiMo 不提供 embedding，走硅基流动
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-mock-api-key-not-configured}
