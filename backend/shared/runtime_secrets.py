@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
+QUANTDB_CONFIG_HINT = (
+    "QUANTDB_API_KEY 未配置，请前往“数据管理 → QuantDB A股 → "
+    "API Key 配置”完成配置"
+)
+
 
 def runtime_env_path() -> Path:
     override = os.getenv("QM_RUNTIME_ENV_FILE", "").strip()
@@ -54,6 +59,22 @@ def load_runtime_env() -> int:
             os.environ[key] = value
             loaded += 1
     return loaded
+
+
+def get_runtime_secret(key: str) -> str:
+    """读取运行时密钥，并在读取前加载后台管理页面保存的配置。
+
+    Celery worker 与命令行脚本不会经过 ``backend.main_oss``，因此不能只依赖
+    主服务启动时的一次加载。这里保留“非空真实环境变量优先”的既有
+    规则。
+    """
+    load_runtime_env()
+    return os.getenv(key, "").strip()
+
+
+def get_quantdb_api_key() -> str:
+    """返回当前 QuantDB API Key；未配置时返回空字符串。"""
+    return get_runtime_secret("QUANTDB_API_KEY")
 
 
 def set_secret(key: str, value: str) -> Path:

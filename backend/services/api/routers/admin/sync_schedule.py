@@ -114,6 +114,15 @@ async def run_market_schedule_now(
     if not cfg.get("enabled"):
         raise HTTPException(status_code=400, detail="该市场定时同步未启用，请先保存配置")
 
+    if market == "A":
+        from backend.shared.runtime_secrets import (
+            QUANTDB_CONFIG_HINT,
+            get_quantdb_api_key,
+        )
+
+        if not get_quantdb_api_key():
+            raise HTTPException(status_code=422, detail=QUANTDB_CONFIG_HINT)
+
     from backend.services.engine.qlib_app.celery_config import celery_app
 
     celery_app.send_task(

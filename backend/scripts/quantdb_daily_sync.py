@@ -55,7 +55,6 @@ log = logging.getLogger("quantdb_daily_sync")
 # Config
 # ---------------------------------------------------------------------------
 QUANTDB_DATA_DIR = Path(os.getenv("QM_QUANTDB_DATA_DIR", str(PROJECT_ROOT / "data" / "quantdb")))
-API_KEY = os.getenv("QUANTDB_API_KEY", "")
 
 # V2 分区数据集 (按交易日分区, sync_dataset 增量同步)
 V2_DATASETS = [
@@ -100,9 +99,15 @@ DB_PASS = os.getenv("DB_PASSWORD", "quantmind")
 # ---------------------------------------------------------------------------
 def _make_client():
     from quantdb_sdk import QuantDBClient
-    if not API_KEY:
-        raise RuntimeError("QUANTDB_API_KEY 未配置")
-    return QuantDBClient(api_key=API_KEY, timeout=(15, 300), max_retries=3)
+    from backend.shared.runtime_secrets import (
+        QUANTDB_CONFIG_HINT,
+        get_quantdb_api_key,
+    )
+
+    api_key = get_quantdb_api_key()
+    if not api_key:
+        raise RuntimeError(QUANTDB_CONFIG_HINT)
+    return QuantDBClient(api_key=api_key, timeout=(15, 300), max_retries=3)
 
 
 # ---------------------------------------------------------------------------

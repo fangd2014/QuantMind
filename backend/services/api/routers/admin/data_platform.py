@@ -602,6 +602,15 @@ async def trigger_daily_sync(
     A 股固定走 QuantDB 增量同步（parquet → PG → Qlib 缓存），不再支持全量模式。
     """
     try:
+        if payload.market.upper() == "A":
+            from backend.shared.runtime_secrets import (
+                QUANTDB_CONFIG_HINT,
+                get_quantdb_api_key,
+            )
+
+            if not get_quantdb_api_key():
+                raise HTTPException(status_code=422, detail=QUANTDB_CONFIG_HINT)
+
         from backend.services.engine.tasks.celery_tasks import daily_data_sync_task
 
         symbols_str = ",".join(payload.symbols) if payload.symbols else ""
@@ -619,6 +628,8 @@ async def trigger_daily_sync(
                 "message": f"同步任务已提交 (task_id={task.id})，后台执行中",
             },
         }
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.error("daily_sync submit failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"failed: {exc}")
@@ -1070,4 +1081,3 @@ async def sync_alpha_agent_market(
     except Exception as exc:  # noqa: BLE001
         logger.error("sync_alpha_agent_market failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"failed: {exc}")
-

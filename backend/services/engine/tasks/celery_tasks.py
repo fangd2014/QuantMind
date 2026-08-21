@@ -763,6 +763,13 @@ def daily_data_sync_task(
         sym_list = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else None
 
         if market.upper() == "A":
+            from backend.shared.runtime_secrets import (
+                QUANTDB_CONFIG_HINT,
+                get_quantdb_api_key,
+            )
+
+            if not get_quantdb_api_key():
+                raise RuntimeError(QUANTDB_CONFIG_HINT)
             from backend.scripts.quantdb_daily_sync import run_daily_sync
 
             result = run_daily_sync(skip_pg=skip_pg)

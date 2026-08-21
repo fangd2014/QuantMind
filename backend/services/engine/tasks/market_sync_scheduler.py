@@ -149,6 +149,7 @@ def dispatch_due_syncs() -> dict[str, Any]:
     now_hm = now.strftime("%H:%M")
     date_str = now.strftime("%Y-%m-%d")
     dispatched: list[str] = []
+    skipped: list[dict[str, str]] = []
 
     for market in MARKETS:
         cfg = get_schedule(market)
@@ -158,6 +159,16 @@ def dispatch_due_syncs() -> dict[str, Any]:
             continue
         if _last_run_today(market, date_str):
             continue
+        if market == "A":
+            from backend.shared.runtime_secrets import (
+                QUANTDB_CONFIG_HINT,
+                get_quantdb_api_key,
+            )
+
+            if not get_quantdb_api_key():
+                skipped.append({"market": market, "reason": QUANTDB_CONFIG_HINT})
+                logger.warning("[SyncSchedule] %s", QUANTDB_CONFIG_HINT)
+                continue
         _mark_run(market, date_str)
         celery_app.send_task(
             "engine.tasks.run_market_scheduled_sync",
@@ -167,4 +178,4 @@ def dispatch_due_syncs() -> dict[str, Any]:
         dispatched.append(market)
         logger.info("[SyncSchedule] %s 到点 %s，已派发同步任务", MARKETS[market], now_hm)
 
-    return {"now": now_hm, "dispatched": dispatched}
+    return {"now": now_hm, "dispatched": dispatched, "skipped": skipped}

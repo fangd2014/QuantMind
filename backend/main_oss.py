@@ -365,6 +365,17 @@ def run_all_services():
                 logger.warning(f"Force killed {name} service")
 
 
+def _ensure_data_quality_alerts_schema() -> None:
+    """执行不受全量初始化结果影响的告警表兼容迁移。"""
+    try:
+        from backend.shared.schema_compat import ensure_data_quality_alerts_table
+
+        ensure_data_quality_alerts_table()
+        logger.info("数据质量告警表结构自检完成")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("数据质量告警表迁移失败（不影响启动）: %s", e)
+
+
 def _ensure_database_schema():
     """启动前自动检测并创建缺失的数据库表。
 
@@ -376,6 +387,7 @@ def _ensure_database_schema():
     init_sql = "/app/backend/shared/db_init.sql"
     if not os.path.isfile(init_sql):
         logger.warning("数据库初始化 SQL 未找到: %s，跳过自动建表", init_sql)
+        _ensure_data_quality_alerts_schema()
         return
 
     db_host = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "db"))
@@ -410,6 +422,10 @@ def _ensure_database_schema():
         _ensure_database_schema_python()
     except Exception as e:
         logger.warning("数据库自动建表失败（不影响启动，后续按需建表）: %s", e)
+    finally:
+        # 必须独立于整份 db_init.sql 执行。旧库可能在更早的约束定义处失败，
+        # 但数据平台 API 仍依赖此表，不能让前序错误阻断告警表迁移。
+        _ensure_data_quality_alerts_schema()
 
 
 def _ensure_market_analysis_tables(env: dict) -> None:

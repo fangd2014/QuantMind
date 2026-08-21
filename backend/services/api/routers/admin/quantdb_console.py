@@ -33,7 +33,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.services.api.user_app.middleware.auth import require_admin
-from backend.shared.runtime_secrets import mask_secret, set_secret
+from backend.shared.runtime_secrets import (
+    QUANTDB_CONFIG_HINT,
+    get_quantdb_api_key,
+    mask_secret,
+    set_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -805,6 +810,9 @@ async def sync_datasets(
     for name in payload.datasets:
         _spec(name)
 
+    if not get_quantdb_api_key():
+        raise HTTPException(status_code=422, detail=QUANTDB_CONFIG_HINT)
+
     job_id = f"qdb-{next(_job_counter)}"
     job = {
         "job_id": job_id,
@@ -1010,7 +1018,7 @@ async def get_quantdb_config(current_user: dict = Depends(require_admin)):
     """返回 API Key 配置状态（脱敏），以及数据目录等运行时配置。"""
     from backend.shared.runtime_secrets import runtime_env_path
 
-    api_key = os.getenv("QUANTDB_API_KEY", "").strip()
+    api_key = get_quantdb_api_key()
     return {
         "success": True,
         "data": {

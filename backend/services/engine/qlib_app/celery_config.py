@@ -21,6 +21,12 @@ except ImportError:
 if load_dotenv:
     load_dotenv(PROJECT_ROOT / ".env")
 
+# Celery 既可由 main_oss 拉起，也可作为独立容器启动。独立启动时同样需要
+# 读取后台管理页面写入 config/runtime.env 的运行时密钥。
+from backend.shared.runtime_secrets import load_runtime_env
+
+load_runtime_env()
+
 
 # Redis连接配置
 def _is_running_in_docker() -> bool:
