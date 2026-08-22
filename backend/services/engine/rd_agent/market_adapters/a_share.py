@@ -19,31 +19,27 @@ class AShareAdapter(MarketAdapter):
     description = "中国 A 股市场 (CSI300)，Qlib Alpha158 因子集"
 
     def get_data_config(self) -> DataConfig:
+        provider_uri = self.get_qlib_provider_uri()
         return DataConfig(
-            provider_uri=self.get_qlib_provider_uri(),
-            data_dir=self._get_quantdb_dir() or "/app/db/qlib_data/cn_data",
+            provider_uri=provider_uri,
+            data_dir=self._get_quantdb_dir() or provider_uri,
             calendar="day",
             market="csi300",
         )
 
     def get_qlib_provider_uri(self) -> str:
-        # 优先使用 QuantDB parquet 构建的 Qlib 缓存
-        quantdb_dir = self._get_quantdb_dir()
-        if quantdb_dir:
-            qlib_cache = os.path.join(quantdb_dir, ".qlib_cache", "cn_data")
-            if os.path.isdir(qlib_cache) and os.path.isfile(
-                os.path.join(qlib_cache, "calendars", "day.txt")
-            ):
-                return qlib_cache
-        # Fallback to original qlib binary path
-        container_path = "/app/db/qlib_data/cn_data"
-        if os.path.isdir(container_path):
-            return container_path
-        host_path = os.path.join(
-            os.getenv("PROJECT_ROOT", "/opt/quantmind"),
-            "db", "qlib_data", "cn_data",
+        from backend.shared.qlib_paths import resolve_qlib_provider_uri
+
+        return resolve_qlib_provider_uri("CN")
+
+    def is_data_ready(self) -> bool:
+        """仅在 Qlib 日历、标的和特征目录均存在时判定为就绪。"""
+        provider = Path(self.get_qlib_provider_uri())
+        return (
+            (provider / "calendars" / "day.txt").is_file()
+            and (provider / "instruments" / "all.txt").is_file()
+            and (provider / "features").is_dir()
         )
-        return host_path
 
     @staticmethod
     def _get_quantdb_dir() -> str | None:

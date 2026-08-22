@@ -933,14 +933,22 @@ async def list_alpha_agent_markets(current_user: dict = Depends(require_admin)):
                 qlib_dir = None
             if qlib_dir and Path(qlib_dir).is_dir():
                 try:
-                    p = Path(qlib_dir)
-                    cal_files = list((p / "calendars").iterdir()) if (p / "calendars").is_dir() else []
-                    feat_count = len(list((p / "features").iterdir())) if (p / "features").is_dir() else 0
+                    from backend.services.api.routers.admin.data_status_scanner import (
+                        _scan_qlib_info,
+                    )
+
+                    scan = _scan_qlib_info(Path(qlib_dir), mid)
                     m["qlib_info"] = {
                         "qlib_dir": str(qlib_dir),
-                        "calendar_files": [f.name for f in cal_files],
-                        "feature_dirs": feat_count,
+                        "calendar_files": scan["calendar_files"],
+                        "calendar_start_date": scan["calendar_start_date"],
+                        "calendar_last_date": scan["calendar_last_date"],
+                        "calendar_total_days": scan["calendar_total_days"],
+                        "instruments_count": scan["instruments"]["total"],
+                        "feature_dirs": scan["feature_dirs_total"],
                     }
+                    if not m.get("data_source") and m["data_ready"]:
+                        m["data_source"] = "qlib"
                 except Exception:
                     m["qlib_info"] = None
             else:
@@ -1003,17 +1011,6 @@ async def sync_alpha_agent_market(
 
         adapter = get_adapter(market)
 
-        # A 股数据通过 QuantDB 单源管理（数据管理页「直接增量同步（QuantDB）」）
-        if market == "a_share":
-            return {
-                "success": True,
-                "data": {
-                    "market": market,
-                    "status": "skipped",
-                    "message": "A 股数据由 QuantDB 单源管理，请使用「直接增量同步（QuantDB）」功能",
-                },
-            }
-
         # 检查是否已就绪（非强制模式下跳过）
         if not force and adapter.is_data_ready():
             return {
@@ -1023,6 +1020,37 @@ async def sync_alpha_agent_market(
                     "market_name": adapter.market_name,
                     "status": "already_ready",
                     "message": f"{adapter.market_name}数据已就绪",
+                },
+            }
+
+        # A 股统一提交 QuantDB 增量同步任务。此前这里只返回 skipped，
+        # 导致前端按钮看似成功但没有下载、任务 ID 或状态变化。
+        if market == "a_share":
+            from backend.shared.runtime_secrets import (
+                QUANTDB_CONFIG_HINT,
+                get_quantdb_api_key,
+            )
+
+            if not get_quantdb_api_key():
+                raise HTTPException(status_code=422, detail=QUANTDB_CONFIG_HINT)
+
+            from backend.services.engine.tasks.celery_tasks import daily_data_sync_task
+
+            task = daily_data_sync_task.delay(
+                market="A",
+                symbols="",
+                incremental=True,
+                calibrate=True,
+                skip_pg=True,
+            )
+            return {
+                "success": True,
+                "data": {
+                    "market": market,
+                    "market_name": adapter.market_name,
+                    "status": "submitted",
+                    "task_id": task.id,
+                    "message": "A股 QuantDB 增量同步任务已提交",
                 },
             }
 
@@ -1076,6 +1104,8 @@ async def sync_alpha_agent_market(
                     "message": f"{adapter.market_name}数据同步失败，请检查日志",
                 },
             }
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001

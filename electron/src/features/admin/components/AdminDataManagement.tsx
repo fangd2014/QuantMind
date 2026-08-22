@@ -38,6 +38,16 @@ import { AdminRightColumn } from './data-management/AdminRightColumn';
 
 const { Title, Text, Paragraph } = Typography;
 
+const getRequestErrorMessage = (err: any): string => {
+    const detail = err?.response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (Array.isArray(detail) && detail.length > 0) {
+        const first = detail[0];
+        return first?.msg || JSON.stringify(first);
+    }
+    return err?.message || '未知错误';
+};
+
 export const AdminDataManagement: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState<AdminDataStatusResult | null>(null);
@@ -251,22 +261,41 @@ export const AdminDataManagement: React.FC = () => {
     const handleSyncMarket = async (marketId: string, force = false) => {
         setMarketSyncing(marketId);
         try {
-            const resp = await adminService.syncAlphaAgentMarket(marketId);
+            const resp = await adminService.syncAlphaAgentMarket(marketId, force);
             if (resp?.success) {
                 const d = resp.data;
                 if (d.status === 'already_ready') {
                     message.info(d.message || `${marketId} 数据已就绪`);
                 } else if (d.status === 'completed') {
                     message.success(d.message || `${marketId} 数据同步完成`);
+                } else if (d.status === 'submitted' && d.task_id) {
+                    message.info(d.message || `${marketId} 数据同步任务已提交`);
+                    let completed = false;
+                    for (let attempt = 0; attempt < 600; attempt += 1) {
+                        await new Promise((resolve) => setTimeout(resolve, 3000));
+                        const statusResp = await adminService.getDailySyncTaskStatus(d.task_id);
+                        const task = statusResp?.data;
+                        if (task?.status === 'SUCCESS') {
+                            message.success(`${marketId} 数据同步完成`);
+                            completed = true;
+                            break;
+                        }
+                        if (task?.status === 'FAILURE') {
+                            throw new Error(task.error || '后台同步任务执行失败');
+                        }
+                    }
+                    if (!completed) {
+                        throw new Error('同步任务等待超时，请稍后刷新状态');
+                    }
                 } else if (d.status === 'skipped') {
                     message.warning(d.message || `${marketId} 已跳过`);
                 }
                 await loadMarketsData();
             } else {
-                message.error('同步失败');
+                message.error(resp?.data?.message || '同步失败');
             }
         } catch (err: any) {
-            message.error(`同步失败: ${err?.message || '未知错误'}`);
+            message.error(`同步失败: ${getRequestErrorMessage(err)}`);
         } finally {
             setMarketSyncing(null);
         }

@@ -214,6 +214,13 @@ const MultiMarketDetail: React.FC<MultiMarketDetailProps> = ({
                         </div>
                     ))}
                 </div>
+            ) : qlib && m.data_ready ? (
+                <div className="p-6 rounded-2xl bg-emerald-50 border border-emerald-100 text-center">
+                    <CheckCircleFilled className="text-emerald-500 text-lg mr-2" />
+                    <Text className="text-emerald-700 font-bold text-sm">
+                        Qlib 数据文件已就绪，可用于 Alpha Agent 因子挖掘
+                    </Text>
+                </div>
             ) : (
                 <div className="p-6 rounded-2xl bg-amber-50 border border-amber-100 text-center">
                     <WarningFilled className="text-amber-500 text-lg mr-2" />
@@ -238,6 +245,22 @@ const MultiMarketDetail: React.FC<MultiMarketDetailProps> = ({
                             {qlib.calendar_files?.join(', ') || '—'}
                         </span>
                     </Text>
+                    {qlib.calendar_last_date && (
+                        <Text className="text-xs text-slate-600">
+                            最新日期:{' '}
+                            <span className="font-bold text-emerald-600">
+                                {qlib.calendar_last_date}
+                            </span>
+                        </Text>
+                    )}
+                    {qlib.instruments_count > 0 && (
+                        <Text className="text-xs text-slate-600">
+                            标的数:{' '}
+                            <span className="font-bold text-indigo-600">
+                                {qlib.instruments_count}
+                            </span>
+                        </Text>
+                    )}
                     <Text className="text-xs text-slate-600">
                         特征目录:{' '}
                         <span className="font-bold text-indigo-600">

@@ -229,9 +229,9 @@ class AdminService {
         return resp.data;
     }
 
-    async syncAlphaAgentMarket(market: string): Promise<any> {
+    async syncAlphaAgentMarket(market: string, force = false): Promise<any> {
         const resp = await this.axiosInstance.post(`/admin/data-platform/sync-alpha-agent-market`, null, {
-            params: { market },
+            params: { market, force },
             timeout: 600000,
         });
         return resp.data;
