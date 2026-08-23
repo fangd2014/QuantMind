@@ -33,11 +33,8 @@ from quantdb_sdk import QuantDBClient
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
 
-SAVE_DIR = "/media/zbox/nas-NSF/QUANTDB"
-API_KEY = os.environ.get(
-    "QUANTDB_API_KEY",
-    "qdb_4069c32fd97f023e05298647691ced9d82d549a3200727c4",
-)
+SAVE_DIR = os.environ.get("QM_QUANTDB_DATA_DIR", "/data/quantdb").strip()
+API_KEY = os.environ.get("QUANTDB_API_KEY", "").strip()
 MAX_RETRIES = 3
 RETRY_DELAY = 10  # seconds
 
@@ -74,6 +71,19 @@ V1_DATASETS = [
 ]
 
 # ─── 日志 ────────────────────────────────────────────────────────────────
+
+if not SAVE_DIR:
+    raise RuntimeError("QM_QUANTDB_DATA_DIR 不能为空")
+
+Path(SAVE_DIR).mkdir(parents=True, exist_ok=True)
+for required_dir in (
+    "1_kline_data",
+    "2_base_sector",
+    "3_financial_data",
+    "5_technical_derived",
+    "6_ml_datasets",
+):
+    (Path(SAVE_DIR) / required_dir).mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,6 +127,8 @@ def format_size(gb: float) -> str:
 
 def make_client() -> QuantDBClient:
     """创建配置了更长超时和更多重试的 SDK 客户端"""
+    if not API_KEY:
+        raise RuntimeError("QUANTDB_API_KEY 未配置")
     return QuantDBClient(
         api_key=API_KEY,
         timeout=(15, 300),  # 连接超时15s，读取超时300s
@@ -268,7 +280,7 @@ def main():
     for ds in datasets:
         local = count_local_files(ds["sub_category"], ds["dir"])
         remote = get_remote_count(client, ds["category_id"], ds["sub_category"])
-        if remote > 0 and local < remote:
+        if remote <= 0 or local < remote:
             need_sync.append(ds)
         else:
             log.info(f"[SKIP] {ds['sub_category']}: 已是最新 ({local}/{remote})")
@@ -333,6 +345,9 @@ def main():
     record_path = os.path.join(SAVE_DIR, "sync_history.jsonl")
     with open(record_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(sync_record, ensure_ascii=False) + "\n")
+
+    if errors:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
