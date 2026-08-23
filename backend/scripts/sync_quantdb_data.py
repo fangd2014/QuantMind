@@ -46,6 +46,11 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from backend.shared.runtime_secrets import get_quantdb_api_key
+except ImportError:  # pragma: no cover - 兼容脱离仓库的旧脚本调用
+    get_quantdb_api_key = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -83,7 +88,11 @@ def _get_engine():
 # ---------------------------------------------------------------------------
 def _get_qdb_client():
     from quantdb_sdk import QuantDBClient
-    api_key = os.getenv("QUANTDB_API_KEY", "").strip()
+    api_key = (
+        get_quantdb_api_key()
+        if get_quantdb_api_key is not None
+        else os.getenv("QUANTDB_API_KEY", "").strip()
+    )
     if not api_key:
         raise RuntimeError("QUANTDB_API_KEY 未配置")
     client = QuantDBClient(api_key=api_key)

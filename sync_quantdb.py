@@ -31,10 +31,18 @@ from datetime import datetime
 
 from quantdb_sdk import QuantDBClient
 
+# 允许在容器外以 standalone 脚本运行时复用后台管理页写入的
+# config/runtime.env；不能只依赖 compose 在进程启动时注入的环境变量。
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from backend.shared.runtime_secrets import get_quantdb_api_key
+except ImportError:  # pragma: no cover - 仅兼容脱离仓库的旧脚本调用
+    get_quantdb_api_key = None
+
 # ─── 配置 ────────────────────────────────────────────────────────────────
 
 SAVE_DIR = os.environ.get("QM_QUANTDB_DATA_DIR", "/data/quantdb").strip()
-API_KEY = os.environ.get("QUANTDB_API_KEY", "").strip()
 MAX_RETRIES = 3
 RETRY_DELAY = 10  # seconds
 
@@ -127,10 +135,15 @@ def format_size(gb: float) -> str:
 
 def make_client() -> QuantDBClient:
     """创建配置了更长超时和更多重试的 SDK 客户端"""
-    if not API_KEY:
+    api_key = (
+        get_quantdb_api_key()
+        if get_quantdb_api_key is not None
+        else os.environ.get("QUANTDB_API_KEY", "").strip()
+    )
+    if not api_key:
         raise RuntimeError("QUANTDB_API_KEY 未配置")
     return QuantDBClient(
-        api_key=API_KEY,
+        api_key=api_key,
         timeout=(15, 300),  # 连接超时15s，读取超时300s
         max_retries=5,      # 更多重试
     )
