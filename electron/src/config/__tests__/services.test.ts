@@ -20,6 +20,7 @@ describe('web deployment service routing', () => {
     const { SERVICE_ENDPOINTS, SERVICE_URLS } = await import('../services');
 
     expect(SERVICE_URLS.API_GATEWAY).toBe('/quantmind-api');
+    expect(SERVICE_URLS.ENGINE_SERVICE).toBe('/quantmind-api');
     expect(SERVICE_ENDPOINTS.USER_SERVICE).toBe('/quantmind-api/api/v1');
     expect(SERVICE_URLS.WEBSOCKET_MARKET).toBe(
       'ws://localhost:3000/quantmind-ws/api/v1/ws/market',
@@ -35,6 +36,7 @@ describe('web deployment service routing', () => {
     const { SERVICE_ENDPOINTS, SERVICE_URLS } = await import('../services');
 
     expect(SERVICE_URLS.API_GATEWAY).toBe('/quantmind-api');
+    expect(SERVICE_URLS.ENGINE_SERVICE).toBe('/quantmind-api');
     expect(SERVICE_ENDPOINTS.USER_SERVICE).toBe('/quantmind-api/api/v1');
     expect(SERVICE_URLS.WEBSOCKET_MARKET).toBe(
       'ws://localhost:3000/quantmind-ws/api/v1/ws/market',
