@@ -86,6 +86,14 @@ V1_DATASETS = [
     {"category_id": "3", "sub_category": "holder_num", "dir": "3_financial_data"},
 ]
 
+REQUIRED_DATA_DIRS = (
+    "1_kline_data",
+    "2_base_sector",
+    "3_financial_data",
+    "5_technical_derived",
+    "6_ml_datasets",
+)
+
 # DB config
 DB_HOST = os.getenv("DB_HOST", os.getenv("DB_MASTER_HOST", "127.0.0.1"))
 DB_PORT = int(os.getenv("DB_PORT", os.getenv("DB_MASTER_PORT", "5432")))
@@ -108,6 +116,13 @@ def _make_client():
     if not api_key:
         raise RuntimeError(QUANTDB_CONFIG_HINT)
     return QuantDBClient(api_key=api_key, timeout=(15, 300), max_retries=3)
+
+
+def ensure_data_layout() -> None:
+    """确保管理页和下游读取器看到稳定的五类 QuantDB 根目录。"""
+    QUANTDB_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for directory in REQUIRED_DATA_DIRS:
+        (QUANTDB_DATA_DIR / directory).mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +448,7 @@ def reseed_state(datasets: list[dict] | None = None) -> dict:
     if datasets is None:
         datasets = V2_DATASETS + V1_DATASETS
 
+    ensure_data_layout()
     client = _make_client()
     state = _open_state()
     summary = {"seeded": 0, "per_dataset": {}}
@@ -513,6 +529,7 @@ def sync_parquet(datasets: list[dict] | None = None, *, dry_run: bool = False) -
     （如 trading_calendar 声明 15224、实际 15203），SDK 会因 size 校验失败
     整个数据集中断。这里改为自行下载 + 哈希校验，并跳过 patches 对象。
     """
+    ensure_data_layout()
     if datasets is None:
         datasets = V2_DATASETS + V1_DATASETS
 
@@ -948,6 +965,7 @@ def run_daily_sync(
     dry_run: bool = False,
 ) -> dict:
     """执行每日同步流程。"""
+    ensure_data_layout()
     result = {
         "started": datetime.now().isoformat(),
         "parquet": None,
