@@ -50,6 +50,13 @@ true | TRUE | True | 1 | yes | YES | Yes)
     echo "QuantDB 同步脚本不存在: ${QUANTDB_SYNC_SCRIPT}" >&2
     FINAL_STATUS=1
   else
+    # 即使当天没有 key 或远端暂不可用，也先建立固定的五类目录，
+    # 让挂载点结构稳定，避免前端把“尚未同步”误判为“路径不存在”。
+    mkdir -p "${QUANTDB_DATA_ROOT}/quantdb/1_kline_data" \
+      "${QUANTDB_DATA_ROOT}/quantdb/2_base_sector" \
+      "${QUANTDB_DATA_ROOT}/quantdb/3_financial_data" \
+      "${QUANTDB_DATA_ROOT}/quantdb/5_technical_derived" \
+      "${QUANTDB_DATA_ROOT}/quantdb/6_ml_datasets"
     QUANTDB_ENV_ARGS=()
     # 管理页保存的 QuantDB key 位于 config/runtime.env；只有确认文件中
     # 存在非空 key 才使用它，避免“文件存在但 key 为空”吞掉后续回退。
