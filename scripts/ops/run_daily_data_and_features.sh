@@ -11,6 +11,7 @@ QUANTDB_SYNC_IMAGE="${QUANTDB_SYNC_IMAGE:-quantmind-oss:latest}"
 QUANTDB_SYNC_SCRIPT="${PROJECT_ROOT}/sync_quantdb.py"
 QUANTDB_DATA_ROOT="${PROJECT_ROOT}/data"
 QUANTDB_ENV_FILE="${PROJECT_ROOT}/.env"
+QUANTDB_RUNTIME_ENV_FILE="${PROJECT_ROOT}/config/runtime.env"
 FINAL_STATUS=0
 
 if [[ -z "${DOCKER_BIN}" ]]; then
@@ -50,13 +51,28 @@ true | TRUE | True | 1 | yes | YES | Yes)
     FINAL_STATUS=1
   else
     QUANTDB_ENV_ARGS=()
-    if [[ -r "${QUANTDB_ENV_FILE}" ]]; then
+    # 管理页保存的 QuantDB key 位于 config/runtime.env；只有确认文件中
+    # 存在非空 key 才使用它，避免“文件存在但 key 为空”吞掉后续回退。
+    if [[ -r "${QUANTDB_RUNTIME_ENV_FILE}" ]] &&
+      grep -q -E '^[[:space:]]*QUANTDB_API_KEY=[^[:space:]]' "${QUANTDB_RUNTIME_ENV_FILE}"; then
+      QUANTDB_ENV_ARGS=(--env-file "${QUANTDB_RUNTIME_ENV_FILE}")
+    elif [[ -r "${QUANTDB_ENV_FILE}" ]] &&
+      grep -q -E '^[[:space:]]*QUANTDB_API_KEY=[^[:space:]]' "${QUANTDB_ENV_FILE}"; then
       QUANTDB_ENV_ARGS=(--env-file "${QUANTDB_ENV_FILE}")
     elif [[ -n "${QUANTDB_API_KEY:-}" ]]; then
+      export QUANTDB_API_KEY
       QUANTDB_ENV_ARGS=(-e QUANTDB_API_KEY)
     else
-      echo "QuantDB 同步失败: ${QUANTDB_ENV_FILE} 不可读且 QUANTDB_API_KEY 未配置" >&2
-      FINAL_STATUS=1
+      # 独立临时同步容器不能读取 quantmind 容器的环境。部署期间若 key
+      # 已注入运行中的服务，安全地继承它，但不把值写入日志或项目文件。
+      CONTAINER_QUANTDB_API_KEY="$(${DOCKER_BIN} exec "${CONTAINER}" printenv QUANTDB_API_KEY 2>/dev/null || true)"
+      if [[ -n "${CONTAINER_QUANTDB_API_KEY}" ]]; then
+        export QUANTDB_API_KEY="${CONTAINER_QUANTDB_API_KEY}"
+        QUANTDB_ENV_ARGS=(-e QUANTDB_API_KEY)
+      else
+        echo "QuantDB 同步失败: runtime.env/.env/服务容器均未配置 QUANTDB_API_KEY" >&2
+        FINAL_STATUS=1
+      fi
     fi
 
     if [[ ${#QUANTDB_ENV_ARGS[@]} -gt 0 ]]; then

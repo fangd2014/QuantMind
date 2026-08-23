@@ -15,6 +15,32 @@ from typing import Any
 
 from quantdb_sdk import QuantDBClient
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from backend.shared.runtime_secrets import get_quantdb_api_key
+except ImportError:  # pragma: no cover - 兼容脱离仓库的旧脚本调用
+    def get_quantdb_api_key() -> str:
+        """在旧分支没有 runtime_secrets 模块时读取同一运行时配置。"""
+        configured = os.environ.get("QUANTDB_API_KEY", "").strip()
+        if configured:
+            return configured
+        runtime_path = Path(
+            os.environ.get(
+                "QM_RUNTIME_ENV_FILE", str(PROJECT_ROOT / "config" / "runtime.env")
+            )
+        )
+        if not runtime_path.is_file():
+            return ""
+        try:
+            for line in runtime_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip() == "QUANTDB_API_KEY":
+                    return value.strip().strip("'\"")
+        except OSError:
+            return ""
+        return ""
+
 DEFAULT_DATA_DIR = "/data/quantdb"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 10
@@ -61,7 +87,7 @@ def resolve_data_dir() -> Path:
 
 
 def require_api_key() -> str:
-    api_key = os.environ.get("QUANTDB_API_KEY", "").strip()
+    api_key = get_quantdb_api_key()
     if not api_key:
         raise RuntimeError("QUANTDB_API_KEY 未配置")
     return api_key
