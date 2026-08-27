@@ -282,21 +282,14 @@ async def get_market_sources_status(
 
     # Redis 检测
     try:
-        from backend.services.stream.market_app.market_config import (
-            MARKET_REDIS_HOST,
-            MARKET_REDIS_PORT,
-            MARKET_REDIS_USER,
-            MARKET_REDIS_PASSWORD,
-            MARKET_REDIS_DB,
-        )
         import redis.asyncio as aioredis
 
         redis_client = aioredis.Redis(
-            host=MARKET_REDIS_HOST,
-            port=MARKET_REDIS_PORT,
-            username=MARKET_REDIS_USER or None,
-            password=MARKET_REDIS_PASSWORD or None,
-            db=MARKET_REDIS_DB,
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            username=os.getenv("REDIS_USER") or None,
+            password=os.getenv("REDIS_PASSWORD") or None,
+            db=int(os.getenv("REDIS_DB", "0")),
         )
         await redis_client.ping()
         online_status["redis"]["status"] = "healthy"
