@@ -1324,6 +1324,18 @@ class ManualExecutionService:
             tenant_id=tenant, user_id=uid
         )
         if not default_model:
+            try:
+                from backend.shared.model_registry import model_registry_service
+
+                default_model = await model_registry_service.get_default_model(
+                    tenant_id=tenant, user_id=uid
+                )
+            except Exception:
+                logger.warning(
+                    "failed to resolve system default model for hosted status",
+                    exc_info=True,
+                )
+        if not default_model:
             return {
                 "available": False,
                 "source": "missing",
